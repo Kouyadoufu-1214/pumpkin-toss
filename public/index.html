@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#14131b"><title>Pumpkin Toss — 投げたら、友だちがカボチャに。</title>
+  <link rel="stylesheet" href="experience.css">
+</head>
+<body>
+<main id="exhibit" class="exhibit">
+  <header class="bar">
+    <a class="brand" href="./"><span>✷</span> PUMPKIN TOSS</a><span class="edition">文化祭 / 体験プロトタイプ</span>
+    <nav><button id="setup-button">会場のイメージ</button><button id="settings-button" aria-expanded="false" aria-controls="settings">設定</button><button id="fullscreen">全画面 ↗</button></nav>
+  </header>
+  <section id="theater" class="theater" aria-label="スクリーン体験">
+    <video id="camera-video" muted playsinline hidden></video>
+    <canvas id="screen" width="1280" height="720" aria-label="カボチャをつかんで相手へ投げるスクリーン。マウスで試すを選ぶと、ドラッグして投げられます。"></canvas>
+    <div class="screen-top"><span id="source-badge" class="badge">● お手本</span><span id="renderer-status"></span></div>
+    <div id="cue" class="cue" aria-live="polite"><span id="cue-step">SCREEN MAGIC / 01</span><h1 id="cue-title">つかんで、投げて、スポッ。</h1><p id="cue-detail">画面の中で、友だちがカボチャになる。</p></div>
+    <div class="screen-bottom"><span id="stage-note">お手本の映像です</span><button id="restart" class="glass" hidden>もう一度投げる ↶</button></div>
+    <div id="message" class="message" role="status" hidden></div>
+    <div id="loading" class="loading" hidden><div class="spinner"></div><strong>カメラを準備しています</strong><p>カメラの使用を許可してください。初回は少し時間がかかります。</p><button id="cancel-camera" class="glass">キャンセル</button></div>
+  </section>
+  <section class="control-deck">
+    <div class="deck-caption"><span>SCREEN MAGIC</span><strong>きみが投げる。<br>友だちが、カボチャになる。</strong></div>
+    <div class="play-buttons"><button id="play-pair" class="primary">◉ カメラで2人プレイ</button><button id="play-solo" class="secondary">ひとりで練習</button></div>
+    <div class="minor-controls"><button id="guide" class="text-button">お手本を見る</button><button id="mouse" class="text-button">マウスで試す</button><button id="customize" class="text-button">かぼちゃを作る ✎</button><button id="stop-camera" class="text-button" hidden>カメラを停止</button></div>
+  </section>
+  <footer><div id="flow"><b>01 つかむ</b><i>→</i><span>02 相手に投げる</span><i>→</i><span>03 スポッとかぶる</span></div><span>カメラ映像はこの端末で処理します</span></footer>
+  <section id="workshop" class="workshop" aria-label="かぼちゃ作り" hidden>
+    <div><strong>自分だけの顔を、ほってみよう。</strong><p>指先をつまんで動かす / マウスでなぞる</p></div>
+    <div class="tools"><button data-shape="round" aria-pressed="true">まる</button><button data-shape="tall" aria-pressed="false">たて長</button><button data-shape="wide" aria-pressed="false">よこ長</button><label>削る太さ <input id="brush" type="range" min="8" max="56" value="24"></label><button id="undo">戻す</button><button id="clear">顔を消す</button><button id="template">お手本の顔</button></div>
+    <button id="finish-carving" class="primary">できた！ この顔で投げる →</button>
+  </section>
+  <section id="settings" class="settings" hidden>
+    <div class="settings-heading"><h2>スタッフ用の設定</h2><button id="close-settings" aria-label="設定を閉じる">×</button></div>
+    <label>カメラ <select id="facing"><option value="user">前面 / 内蔵カメラ</option><option value="environment">背面カメラ</option></select></label>
+    <button id="switch-camera" class="secondary">このカメラで再開</button>
+    <label><input id="mirror" type="checkbox" checked> 鏡のように左右反転する</label><label><input id="sound" type="checkbox"> 効果音を鳴らす</label>
+    <button id="swap" class="secondary">投げる側を左右入れ替える</button><button id="assist" class="secondary">スタッフ操作で投げる</button>
+    <p id="tracking-status" class="technical">カメラは停止中</p>
+    <p class="settings-note">共有されたURLをブラウザーで開き、カメラの使用を許可してください。初回は検出データの読み込みに時間がかかります。スマホでの認識精度は実機で確認してください。</p>
+  </section>
+  <dialog id="setup-dialog">
+    <button id="close-setup" class="dialog-close" aria-label="会場のイメージを閉じる">×</button><span class="eyebrow">会場での見え方</span><h2>大きな「不思議な鏡」を置こう。</h2><p>スクリーンに映った自分たちに、カボチャが重なります。</p>
+    <div class="room-plan"><div class="plan-screen">スクリーン / 大きなモニター</div><div class="plan-camera">● カメラ</div><div class="sight-lines"></div><div class="plan-players"><span>① 投げる人</span><span>② かぶる人</span></div></div>
+    <ol><li>PCをモニターやプロジェクターにつないで、この画面を全画面にする。</li><li>カメラをスクリーンの近くに置き、2人の顔と手が映る位置に立つ。</li><li>投げる人は画面のカボチャに手を重ね、にぎる → 相手へ振って手を開く。</li></ol>
+    <p class="settings-note">最初は内蔵カメラとPC画面で試せます。外付けカメラがあると、会場で置く位置を調整しやすくなります。</p><button id="understood" class="primary">体験に戻る →</button>
+  </dialog>
+</main>
+<script type="module" src="experience.mjs"></script>
+</body>
+</html>
