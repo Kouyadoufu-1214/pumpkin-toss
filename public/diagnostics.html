@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>検出モデルの動作確認</title>
+<style>body{font:16px sans-serif;max-width:750px;margin:60px auto;padding:20px;background:#191320;color:#eee}button{padding:14px;font:inherit}pre{white-space:pre-wrap;line-height:1.8}a{color:#ffbc72}</style>
+<h1>検出モデルの動作確認</h1>
+<p>カメラを使わず、白紙の画像で顔・手の検出処理が起動するか確認します。</p>
+<button id="run">確認をはじめる</button><pre id="result" role="status">未実行</pre>
+<p><a href="./">体験画面へ</a></p>
+<script type="module">
+const button = document.getElementById('run'), result = document.getElementById('result');
+button.addEventListener('click', () => {
+  button.disabled = true; result.textContent = 'モデルを読み込み中…';
+  const worker = new Worker('./tracker-worker.js');
+  const finish = text => { result.textContent = text; worker.terminate(); button.disabled = false; clearTimeout(timer); };
+  const timer = setTimeout(() => finish('失敗: 検出処理が60秒以内に応答しませんでした。'), 60000);
+  worker.onerror = e => finish(`失敗: ${e.message}`);
+  worker.onmessage = async ({data}) => {
+    if (data.type === 'ready') {
+      result.textContent = 'モデルの読み込み成功。白紙画像を検出中…';
+      const blank = document.createElement('canvas'); blank.width = 640; blank.height = 480;
+      const ctx = blank.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 640, 480);
+      const bitmap = await createImageBitmap(blank);
+      worker.postMessage({type:'frame', bitmap, time:performance.now()}, [bitmap]);
+    } else if (data.type === 'result') {
+      finish(`成功: 顔・手のモデルが起動し、画像を処理しました。\n顔: ${data.faces.length}人 / 手: ${data.hands.length}本（白紙なので両方0が正常）\n実際の顔や手の認識精度は、体験画面で確認してください。`);
+    } else if (data.type === 'error') finish(`失敗: ${data.message}`);
+  };
+  worker.postMessage({type:'init'});
+});
+</script>
+</html>

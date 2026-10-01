@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#15111d">
+  <title>Pumpkin Studio — 以前の工房</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="Pumpkin Studio ホーム"><span class="brand-icon">✦</span> PUMPKIN <b>STUDIO</b></a>
+    <div class="edition">文化祭 2026 <span>／</span> 3D AR プロトタイプ</div>
+    <button id="fullscreen" class="quiet">全画面にする ↗</button>
+  </header>
+  <main>
+    <section class="intro">
+      <div><p class="eyebrow">MAKE A LITTLE MAGIC.</p><h1>つくって、投げて、<em>かぶっちゃおう。</em></h1><p class="lead">目の前に、立体のカボチャ。手を伸ばして、きみだけの顔に。</p></div>
+      <button id="camera" class="camera-button"><span class="camera-icon">◉</span> カメラでARをはじめる</button>
+    </section>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <div class="workspace">
+      <aside class="workshop">
+        <div class="panel-heading"><span class="eyebrow">YOUR PUMPKIN</span><span class="tag">工房</span></div>
+        <h2>どんな顔にする？</h2>
+        <label class="field-label">カボチャのかたち</label>
+        <div class="shapes" role="group" aria-label="カボチャのかたち">
+          <button data-shape="round" class="selected" aria-pressed="true"><span class="shape-circle"></span>まんまる</button>
+          <button data-shape="tall" aria-pressed="false"><span class="shape-circle tall"></span>のっぽ</button>
+          <button data-shape="wide" aria-pressed="false"><span class="shape-circle wide"></span>ぺたんこ</button>
+        </div>
+        <div class="label-line"><label for="brush">削る太さ</label><output id="brush-value" for="brush">24</output></div>
+        <input type="range" id="brush" min="8" max="56" value="24">
+        <div class="range-labels"><span>こまかく</span><span>ざっくり</span></div>
+        <div class="edit-buttons"><button id="undo" class="secondary">↶ ひとつ戻す</button><button id="clear" class="secondary">全部消す</button></div>
+        <button id="template" class="template-button">✧ 顔の見本を入れる</button>
+        <div class="rotate-controls">
+          <div class="label-line"><label for="rotation">回して見る</label><output id="rotation-value" for="rotation">−15°</output></div>
+          <input type="range" id="rotation" min="-180" max="180" value="-15" aria-label="カボチャを回して見る">
+          <div class="edit-buttons"><button id="front" class="secondary">正面に戻す</button><button id="spin" class="secondary" aria-pressed="false">↻ 一周見る</button></div>
+          <p class="help">回すと側面も見えます。削るときは正面へ。</p>
+        </div>
+        <div class="divider"></div>
+        <label class="field-label" for="receiver">かぶる人の立ち位置</label>
+        <select id="receiver"><option value="right">画面の右側の人</option><option value="left">画面の左側の人</option></select>
+        <p class="help">ひとりで試すときは、自分にかぶせられます。</p>
+        <div class="sidebar-bottom"><span class="little-star">✷</span><p>上手に描けなくても大丈夫。<br>へんてこな顔ほど、おもしろい。</p></div>
+      </aside>
+      <section class="experience" aria-label="カボチャ体験">
+        <div class="stage-top"><div class="live-label"><i id="status-dot"></i><span id="camera-state">マウスでおためし</span><span id="render-badge" class="render-badge">3D 準備中</span></div><span id="tracking-state">カメラなしでも遊べます</span></div>
+        <div class="stage-wrap">
+          <video id="video" muted playsinline hidden></video>
+          <canvas id="stage" width="1120" height="700" aria-label="カボチャの表面をドラッグして削れます。完成したら下のできたボタンを押してください。"></canvas>
+          <div class="stage-caption"><span id="mode-label">01 / CARVE</span><span id="stage-instruction">カボチャをドラッグして、自由に削ってみよう。</span></div>
+        </div>
+        <div class="action-bar"><div><p id="action-title">きみだけの顔を、彫ってみよう。</p><p id="action-hint">マウスでなぞると、内側の光が見えてきます。</p></div><button id="next" class="primary">できた！ 投げる →</button></div>
+      </section>
+    </div>
+    <div class="steps" aria-label="遊び方">
+      <div class="step active" data-step="carve"><span>01</span><div><b>ほる</b><p>指をつまんで、なぞろう</p></div><i>✧</i></div>
+      <div class="step" data-step="throw"><span>02</span><div><b>なげる</b><p>つかんで、振って、はなす</p></div><i>↗</i></div>
+      <div class="step" data-step="worn"><span>03</span><div><b>かぶる</b><p>自分も友だちも、カボチャに</p></div><i>☺</i></div>
+    </div>
+    <footer><span>小さな工房から、ハロウィンの魔法を。</span><div><button id="sound" class="text-button" aria-pressed="false">効果音 OFF</button><span class="footer-dot">·</span><span>映像はこのPC内で処理・録画なし</span></div></footer>
+  </main>
+  <script type="module" src="app.mjs"></script>
+</body>
+</html>
