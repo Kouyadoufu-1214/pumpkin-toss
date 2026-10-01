@@ -1,0 +1,11 @@
+{
+  "name": "pumpkin-festival-prototype",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "assets": "node scripts/download-assets.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs"
+  }
+}
