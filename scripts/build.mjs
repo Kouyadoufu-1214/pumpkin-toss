@@ -4,7 +4,7 @@ import path from 'node:path';
 
 const project = fileURLToPath(new URL('../', import.meta.url));
 const output = path.join(project, 'dist');
-const pages = ['index.html', 'experience.css', 'experience.mjs', 'exhibit-logic.mjs', 'interaction.mjs', 'pumpkin-art.mjs', 'pumpkin-3d.mjs', 'tracker-worker.js', 'diagnostics.html'];
+const pages = ['index.html', 'experience.css', 'experience.mjs', 'exhibit-logic.mjs', 'interaction.mjs', 'carving-path.mjs', 'pumpkin-art.mjs', 'pumpkin-3d.mjs', 'tracker-worker.js', 'diagnostics.html'];
 const vendor = ['vision_bundle.js', 'mediapipe-LICENSE.txt', 'wasm/vision_wasm_internal.js', 'wasm/vision_wasm_internal.wasm', 'wasm/vision_wasm_nosimd_internal.js', 'wasm/vision_wasm_nosimd_internal.wasm', 'face_landmarker.task', 'hand_landmarker.task', 'three/three.module.js', 'three/three.core.js', 'three/LICENSE'];
 for (const file of vendor) {
   try { await access(path.join(project, 'public/vendor', file)); }
