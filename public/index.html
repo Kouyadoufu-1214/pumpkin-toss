@@ -27,8 +27,11 @@
   </section>
   <footer><div id="flow"><b>01 つかむ</b><i>→</i><span>02 相手に投げる</span><i>→</i><span>03 スポッとかぶる</span></div><span>カメラ映像はこの端末で処理します</span></footer>
   <section id="workshop" class="workshop" aria-label="かぼちゃ作り" hidden>
-    <div><strong>自分だけの顔を、ほってみよう。</strong><p>指先をつまんで動かす / マウスでなぞる</p></div>
-    <div class="tools"><button data-shape="round" aria-pressed="true">まる</button><button data-shape="tall" aria-pressed="false">たて長</button><button data-shape="wide" aria-pressed="false">よこ長</button><label>削る太さ <input id="brush" type="range" min="8" max="56" value="24"></label><button id="undo">戻す</button><button id="clear">顔を消す</button><button id="template">お手本の顔</button></div>
+    <div class="drawing-tools">
+      <div class="tools drawing-options"><strong>自由に描いて、整える。</strong><div class="mode-switch" role="group" aria-label="削り方"><button data-carve-mode="cutout" aria-pressed="true">囲んで抜く</button><button data-carve-mode="line" aria-pressed="false">線で削る</button></div><label>手ぶれ補正 <select id="smoothing"><option value="1">軽め</option><option value="2" selected>標準</option><option value="3">強め</option></select></label><label id="brush-control" hidden>線の太さ <input id="brush" type="range" min="6" max="40" value="16"></label></div>
+      <p id="carving-feedback" role="status">一筆で囲んで、始めの丸に戻ってはなす → 中を切り抜く</p>
+      <div class="tools shape-tools"><span>形</span><button data-shape="round" aria-pressed="true">まる</button><button data-shape="tall" aria-pressed="false">たて長</button><button data-shape="wide" aria-pressed="false">よこ長</button><button id="undo">ひとつ戻す</button><button id="clear">白紙から作る</button><button id="template">お手本の顔</button></div>
+    </div>
     <button id="finish-carving" class="primary">できた！ この顔で投げる →</button>
   </section>
   <section id="settings" class="settings" hidden>

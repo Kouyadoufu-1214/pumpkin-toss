@@ -2,6 +2,7 @@ import { clamp, distance, isPinched } from './interaction.mjs';
 import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose } from './exhibit-logic.mjs';
 import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs';
 import { PumpkinArt } from './pumpkin-art.mjs';
+import { outlineInfo } from './carving-path.mjs';
 
 const $ = id => document.getElementById(id);
 const canvas = $('screen'), c = canvas.getContext('2d'), video = $('camera-video');
@@ -33,12 +34,17 @@ function notice(text, duration = 3800) {
 }
 function resetRound() {
   phase = source === 'camera' ? 'waiting' : 'ready'; toss.cancel(); heldPose = flight = smoothTarget = null;
-  controlHand = null; gripped = pinched = false; dwell.reset(); art.end(); pointer = null; roleSince = 0;
+  controlHand = null; gripped = pinched = false; dwell.reset(); art.cancel(); pointer = null; roleSince = 0;
   $('restart').hidden = true;
 }
 function cancelHold(message) {
   if (phase === 'held') { toss.cancel(); heldPose = null; phase = 'ready'; if (message) notice(message); }
-  gripped = false; controlHand = null; art.end(); pinched = false;
+  gripped = false; controlHand = null;
+  if (!carving || pointer === null) {
+    if (carving && art.base) carvingFeedback('手を見失ったので、下書きを取り消しました。もう一度描こう');
+    art.cancel();
+  }
+  pinched = false;
 }
 function restPose(time = performance.now()) {
   const person = caster || sampleRoles().caster;
@@ -170,7 +176,9 @@ function acceptTracking(data) {
   if (!controlHand) { cancelHold(previous && phase === 'held' ? '手を見失いました。カボチャをもう一度つかもう' : null); dwell.reset(); return; }
   if (carving) {
     const pinch = isPinched(controlHand.points, pinched);
-    if (pinch) carveAt(controlHand.points[8]); else art.end();
+    if (pointer === null) {
+      if (pinch) carveAt(controlHand.points[8]); else if (pinched) finishStroke();
+    }
     pinched = pinch;
     if (dwell.update(!pinch && distance(controlHand.palm, carvingDonePoint()) < 70, time)) finishCarving();
     return;
@@ -197,7 +205,8 @@ function acceptTracking(data) {
 function openCarving() {
   if (source === 'guide') startSample('mouse');
   resetRound(); carving = true; $('exhibit').classList.add('carving'); $('workshop').hidden = false;
-  $('stage-note').textContent = 'カボチャの表面をなぞって、目や口をほろう';
+  updateCarvingTools();
+  $('stage-note').textContent = '線は下書き。指をはなすと、なめらかに整えて削ります';
 }
 function finishCarving() {
   carving = false; $('exhibit').classList.remove('carving'); $('workshop').hidden = true; resetRound();
@@ -206,8 +215,22 @@ function finishCarving() {
 const carvingPose = () => { const [sx, sy] = shapeScale(); return { x: 640, y: 422, w: 530 * sx, h: 480 * sy }; };
 function carveAt(point) {
   const pose = carvingPose();
-  const hit = pumpkin ? pumpkin.hit(point, pose, true) : { x: (point.x - pose.x) / pose.w * 512 + 256, y: (point.y - pose.y) / pose.h * 512 + 256 };
-  art.stroke(hit, Number($('brush').value));
+  const hit = pumpkin ? pumpkin.hit(point, pose, true) : { x: (point.x - pose.x) / (pose.w * .76) * 512 + 256, y: (point.y - pose.y) / (pose.h * .76) * 512 + 256 };
+  const valid = art.stroke(hit);
+  carvingFeedback(!valid ? '表面から外れました。指をはなして、もう一度描こう' : art.options.mode === 'line' ? '下書き中 · はなすと線を削ります' : outlineInfo(art.draft.points).closed ? '輪郭がつながった！ はなすと切り抜けます' : '下書き中 · 描き始めの丸まで戻ろう');
+}
+function carvingFeedback(message) { if ($('carving-feedback').textContent !== message) $('carving-feedback').textContent = message; }
+function finishStroke() {
+  const result = art.end();
+  if (!result) return;
+  const messages = { cut: 'きれいに削れた！ 次の目や口を描こう', open: 'まだ輪郭が開いています。始めの丸に戻ってから、はなそう', small: 'もう少し大きく描いてみよう', interrupted: '下書きを取り消しました。表面の中でもう一度描こう' };
+  carvingFeedback(messages[result.kind]);
+}
+function updateCarvingTools() {
+  const cutout = art.options.mode === 'cutout';
+  document.querySelectorAll('[data-carve-mode]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.carveMode === art.options.mode)));
+  $('brush-control').hidden = cutout;
+  carvingFeedback(cutout ? '一筆で囲んで、始めの丸に戻ってはなす → 中を切り抜く' : '好きな線を描いてはなす → なめらかな線で削る');
 }
 function pointerPoint(event) {
   const box = canvas.getBoundingClientRect();
@@ -217,7 +240,7 @@ function pointerPoint(event) {
 canvas.addEventListener('pointerdown', event => {
   if (loading) return;
   const point = pointerPoint(event);
-  if (carving) { pointer = event.pointerId; canvas.setPointerCapture(pointer); carveAt(point); return; }
+  if (carving) { art.cancel(); pointer = event.pointerId; canvas.setPointerCapture(pointer); carveAt(point); return; }
   if (source === 'guide') return;
   if (phase === 'worn' && distance(point, { x: 640, y: 625 }) < 70) { resetRound(); return; }
   if (phase !== 'ready' || distance(point, restPose()) > 140) return;
@@ -233,7 +256,7 @@ canvas.addEventListener('pointermove', event => {
 canvas.addEventListener('pointerup', event => {
   if (pointer !== event.pointerId) return;
   pointer = null;
-  if (carving) { art.end(); return; }
+  if (carving) { carveAt(pointerPoint(event)); finishStroke(); return; }
   if (phase !== 'held') return;
   const from = { ...heldPose }, target = currentTarget();
   const result = toss.release(pointerPoint(event), performance.now(), target);
@@ -331,7 +354,7 @@ function burst(pose, time) {
   c.restore();
 }
 function updateCue() {
-  if (carving) { cue('MAKE YOUR PUMPKIN', 'どんな顔にする？', '指先でつまんで動かすと、光がもれる穴になる。'); return; }
+  if (carving) { cue('MAKE YOUR PUMPKIN', '描いた形が、きれいな穴に。', source === 'camera' ? '親指と人差し指をつまんで描く。はなすと、線を整えて削ります。' : 'ドラッグして描く。はなすと、線を整えて削ります。'); return; }
   if (source === 'guide') return;
   if (phase === 'waiting') cue('GET READY', solo ? '左に映って、手を見せよう' : '2人で、左右の枠に入ろう', solo ? '右のお手本の相手に投げてみよう。' : 'オレンジが投げる人。むらさきがかぶる人。');
   if (phase === 'ready') cue('01 / つかむ', 'カボチャを、つかもう。', source === 'mouse' ? 'カボチャをマウスでつかんで、相手のほうへ。' : '画面のカボチャに手を重ねて、にぎる。つまんでもOK。');
@@ -414,8 +437,13 @@ $('mouse').onclick = () => { if (carving) finishCarving(); startSample('mouse');
 $('stop-camera').onclick = $('cancel-camera').onclick = () => { if (carving) finishCarving(); startSample('mouse'); };
 $('restart').onclick = resetRound;
 $('customize').onclick = openCarving; $('finish-carving').onclick = finishCarving;
-$('undo').onclick = () => art.undo(); $('clear').onclick = () => art.clear(); $('template').onclick = () => art.template();
-document.querySelectorAll('[data-shape]').forEach(button => button.onclick = () => { shape = button.dataset.shape; document.querySelectorAll('[data-shape]').forEach(item => item.setAttribute('aria-pressed', String(item === button))); });
+$('undo').onclick = () => { art.undo(); updateCarvingTools(); };
+$('clear').onclick = () => { art.clear(); updateCarvingTools(); };
+$('template').onclick = () => { art.template(); updateCarvingTools(); };
+document.querySelectorAll('[data-carve-mode]').forEach(button => button.onclick = () => { art.configure({ mode: button.dataset.carveMode }); updateCarvingTools(); });
+$('smoothing').onchange = () => { art.configure({ smoothing: Number($('smoothing').value) }); updateCarvingTools(); };
+$('brush').oninput = () => art.configure({ size: Number($('brush').value) });
+document.querySelectorAll('[data-shape]').forEach(button => button.onclick = () => { art.cancel(); shape = button.dataset.shape; document.querySelectorAll('[data-shape]').forEach(item => item.setAttribute('aria-pressed', String(item === button))); });
 function toggleSettings(open) { $('settings').hidden = !open; $('settings-button').setAttribute('aria-expanded', String(open)); }
 $('settings-button').onclick = () => toggleSettings($('settings').hidden); $('close-settings').onclick = () => toggleSettings(false);
 $('switch-camera').onclick = () => { toggleSettings(false); startCamera(solo); };
