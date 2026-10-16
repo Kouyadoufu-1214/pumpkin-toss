@@ -16,6 +16,8 @@ const files = [
   ['package.json', `${cdn}/package.json`],
   ['three/three.module.js', 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js'],
   ['three/three.core.js', 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.core.js'],
+  ['three/GLTFLoader.js', 'https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/loaders/GLTFLoader.js'],
+  ['three/BufferGeometryUtils.js', 'https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/utils/BufferGeometryUtils.js'],
   ['three/LICENSE', 'https://cdn.jsdelivr.net/npm/three@0.180.0/LICENSE'],
 ];
 for (const [name, url] of files) {
@@ -28,7 +30,13 @@ for (const [name, url] of files) {
   console.log(`Downloading: ${name}`);
   const response = await fetch(url, { signal: AbortSignal.timeout(120000) });
   if (!response.ok) throw new Error(`${response.status}: ${url}`);
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  let bytes = new Uint8Array(await response.arrayBuffer());
+  if (name === 'three/GLTFLoader.js' || name === 'three/BufferGeometryUtils.js') {
+    const source = new TextDecoder().decode(bytes)
+      .replaceAll("from 'three'", "from './three.module.js'")
+      .replaceAll("from '../utils/BufferGeometryUtils.js'", "from './BufferGeometryUtils.js'");
+    bytes = new TextEncoder().encode(source);
+  }
   await mkdir(path.dirname(destination), { recursive: true });
   const temporary = `${destination}.part`;
   await writeFile(temporary, bytes);
