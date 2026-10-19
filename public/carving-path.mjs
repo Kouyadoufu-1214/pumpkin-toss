@@ -73,6 +73,7 @@ export class FreehandStroke {
   }
   finish({ mode = 'cutout', smoothing = 2 } = {}) {
     if (this.interrupted) return { kind: 'interrupted', points: [] };
+    if ((mode === 'scrape' || mode === 'restore') && this.points.length) return { kind: 'cut', closed: false, points: smoothPath(this.points, smoothing) };
     if (this.points.length < 3 || this.points.reduce((sum, p, i) => sum + (i ? distance(p, this.points[i - 1]) : 0), 0) < 12) return { kind: 'small', points: [] };
     const closed = mode === 'cutout' && outlineInfo(this.points).closed;
     if (mode === 'cutout' && !closed) return { kind: 'open', points: [] };

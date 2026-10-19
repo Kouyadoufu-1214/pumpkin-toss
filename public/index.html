@@ -9,7 +9,7 @@
 <main id="exhibit" class="exhibit">
   <header class="bar">
     <a class="brand" href="./"><span>✷</span> PUMPKIN TOSS</a><span class="edition">文化祭 / 体験プロトタイプ</span>
-    <nav><button id="setup-button">会場のイメージ</button><button id="settings-button" aria-expanded="false" aria-controls="settings">設定</button><button id="fullscreen">全画面 ↗</button></nav>
+    <nav><a id="gallery-link" class="gallery-link" target="_blank" rel="noopener">みんなの展示室 ↗</a><button id="setup-button">会場のイメージ</button><button id="settings-button" aria-expanded="false" aria-controls="settings">設定</button><button id="fullscreen">全画面 ↗</button></nav>
   </header>
   <section id="theater" class="theater" aria-label="スクリーン体験">
     <video id="camera-video" muted playsinline hidden></video>
@@ -28,11 +28,11 @@
   <footer><div id="flow"><b>01 つかむ</b><i>→</i><span>02 相手に投げる</span><i>→</i><span>03 スポッとかぶる</span></div><span>カメラ映像はこの端末で処理します</span></footer>
   <section id="workshop" class="workshop" aria-label="かぼちゃ作り" hidden>
     <div class="drawing-tools">
-      <div class="tools drawing-options"><strong>自由に描いて、整える。</strong><div class="mode-switch" role="group" aria-label="削り方"><button data-carve-mode="cutout" aria-pressed="true">囲んで抜く</button><button data-carve-mode="line" aria-pressed="false">線で削る</button></div><label>手ぶれ補正 <select id="smoothing"><option value="1">軽め</option><option value="2" selected>標準</option><option value="3">強め</option></select></label><label id="brush-control" hidden>線の太さ <input id="brush" type="range" min="6" max="40" value="16"></label></div>
+      <div class="tools drawing-options"><strong>自分だけのかぼちゃを彫ろう。</strong><div class="mode-switch" role="group" aria-label="削り方"><button data-carve-mode="scrape" aria-pressed="true">少しずつ削る</button><button data-carve-mode="cutout" aria-pressed="false">囲んで抜く</button><button data-carve-mode="line" aria-pressed="false">線で削る</button><button data-carve-mode="restore" aria-pressed="false">埋め直す</button></div><label>手ぶれ補正 <select id="smoothing"><option value="1">軽め</option><option value="2" selected>標準</option><option value="3">強め</option></select></label><label id="brush-control">道具の太さ <input id="brush" type="range" min="6" max="60" value="28"></label></div>
       <p id="carving-feedback" role="status">一筆で囲んで、始めの丸に戻ってはなす → 中を切り抜く</p>
-      <div class="tools shape-tools"><span>形</span><button data-shape="round" aria-pressed="true">まる</button><button data-shape="tall" aria-pressed="false">たて長</button><button data-shape="wide" aria-pressed="false">よこ長</button><button id="undo">ひとつ戻す</button><button id="clear">白紙から作る</button><button id="template">お手本の顔</button></div>
+      <div class="tools shape-tools"><span>形</span><button data-shape="round" aria-pressed="true">まる</button><button data-shape="tall" aria-pressed="false">たて長</button><button data-shape="wide" aria-pressed="false">よこ長</button><button id="undo">戻す</button><button id="redo">やり直す</button><button id="clear">白紙から作る</button><button id="template">お手本の顔</button><button id="save-artwork">作品ファイルを保存</button></div>
     </div>
-    <button id="finish-carving" class="primary">できた！ この顔で投げる →</button>
+    <div class="workshop-finish"><span id="draft-status" role="status">制作途中はこの端末に保存します</span><button id="exhibit-artwork" class="primary">完成した作品を展示する ↗</button><button id="finish-carving" class="secondary">この顔で投げる →</button></div>
   </section>
   <section id="settings" class="settings" hidden>
     <div class="settings-heading"><h2>スタッフ用の設定</h2><button id="close-settings" aria-label="設定を閉じる">×</button></div>

@@ -52,6 +52,7 @@ function shellMaterial(mask, { inner = false, source = null } = {}) {
       if (pumpkinPosition.z > 0.05 && carvingUV.x > 0.0 && carvingUV.x < 1.0 && carvingUV.y > 0.0 && carvingUV.y < 1.0) {
         float cut = texture2D(carvingMask, carvingUV).a;
         if (cut > 0.5) discard;
+        ${inner ? '' : 'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.63, 0.22), min(cut * 1.8, 0.9));'}
       }
     `);
     if (inner) shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>', `
@@ -60,7 +61,7 @@ function shellMaterial(mask, { inner = false, source = null } = {}) {
       totalEmissiveRadiance *= 0.28 + 0.85 * exp(-2.6 * dot(glowOffset, glowOffset));
     `);
   };
-  material.customProgramCacheKey = () => `pumpkin-cut-v2-${inner}`;
+  material.customProgramCacheKey = () => `pumpkin-cut-v3-${inner}`;
   return material;
 }
 

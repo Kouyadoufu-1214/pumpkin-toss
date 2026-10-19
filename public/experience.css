@@ -8,3 +8,8 @@
 @media(max-height:550px) and (min-width:621px){.exhibit{height:100dvh;min-height:350px;grid-template-rows:40px minmax(200px,1fr) 65px}.bar{height:40px}.control-deck{padding:8px 15px;gap:20px}.play-buttons{flex-direction:row}.play-buttons button{padding:10px 14px}.deck-caption{display:none}footer{display:none}.cue{top:12px}.cue h1{font-size:21px;margin:4px}.cue>span{display:none}.screen-top{top:9px}.workshop{bottom:5px}.carving .theater{margin-bottom:30px}}
 @media(max-height:550px) and (min-width:621px){.exhibit.carving{height:auto;min-height:100dvh;grid-template-rows:40px 330px auto}.carving .theater{margin-bottom:12px}}
 .carving .workshop .drawing-tools{display:block}
+
+.gallery-link{color:var(--orange);font-size:12px;text-decoration:none;align-self:center;padding:8px}.workshop-finish{display:flex;flex-direction:column;gap:8px;min-width:220px}.workshop-finish button{font-size:12px}.workshop-finish>span{font-size:10px;color:var(--muted);line-height:1.5}.mode-switch{flex-wrap:wrap}.drawing-options{row-gap:8px}.tools button:disabled{cursor:default}
+@media(max-width:800px){.bar #setup-button{display:none}.carving .workshop{flex-wrap:wrap}.workshop-finish{display:grid;grid-template-columns:1fr 1fr;width:100%;min-width:0}.workshop-finish>span{grid-column:1/-1}.workshop-finish button{white-space:normal;padding:12px 8px}.bar .gallery-link{font-size:10px;padding:6px 4px}.drawing-tools{flex-basis:100%}}
+@media(prefers-reduced-motion:reduce){.spinner{animation:none}}
+

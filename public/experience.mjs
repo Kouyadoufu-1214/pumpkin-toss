@@ -3,6 +3,8 @@ import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, fl
 import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs';
 import { PumpkinArt } from './pumpkin-art.mjs';
 import { outlineInfo } from './carving-path.mjs';
+import { encodeMask, decodeMask, validateArtwork, MAX_GALLERY_MASK_LENGTH } from './artwork-codec.mjs';
+import { GALLERY_URL } from './gallery-config.mjs';
 
 const $ = id => document.getElementById(id);
 const canvas = $('screen'), c = canvas.getContext('2d'), video = $('camera-video');
@@ -16,6 +18,28 @@ let caster = null, receiver = null, controlHand = null, gripped = false, pinched
 let lastResult = 0, faces = [], hands = [], smoothTarget = null, pointer = null, messageTimer, lastCue = '';
 let session = 0, stream = null, worker = null, workerReady = false, processing = false, lastFrame = 0, lastVideoTime = -1, loading = false, initTimer, requestReject;
 let audioContext;
+const DRAFT_KEY = 'pumpkin-toss-artwork-v1';
+let draftTimer;
+function artworkData() { return { version: 1, shape, mask: encodeMask((art.base || art.ctx.getImageData(0, 0, 512, 512)).data) }; }
+function saveDraft() {
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify(artworkData())); $('draft-status').textContent = 'この端末に保存済み'; }
+  catch { $('draft-status').textContent = '自動保存できません。「作品ファイルを保存」で残せます'; }
+}
+function queueDraft() { clearTimeout(draftTimer); draftTimer = setTimeout(saveDraft, 500); }
+function downloadArtwork() {
+  art.cancel();
+  const url = URL.createObjectURL(new Blob([JSON.stringify(artworkData())], { type: 'application/json' }));
+  const link = document.createElement('a'); link.href = url; link.download = 'my-pumpkin.pumpkin.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+function restoreDraft() {
+  try {
+    const saved = localStorage.getItem(DRAFT_KEY); if (!saved) return;
+    const draft = validateArtwork(JSON.parse(saved));
+    art.ctx.putImageData(new ImageData(decodeMask(draft.mask), 512, 512), 0, 0); art.changed = true; shape = draft.shape;
+    document.querySelectorAll('[data-shape]').forEach(item => item.setAttribute('aria-pressed', String(item.dataset.shape === shape)));
+    $('draft-status').textContent = '前回の続きから制作できます';
+  } catch { $('draft-status').textContent = '前回の保存を読み込めませんでした'; }
+}
 const colors = { orange: '#ffb76b', violet: '#beafff', paper: '#f4efdf' };
 const shapeScale = () => shape === 'tall' ? [.86, 1.18] : shape === 'wide' ? [1.22, .87] : [1, 1];
 const roleOptions = () => ({ width: W, swapped, solo });
@@ -206,9 +230,10 @@ function openCarving() {
   if (source === 'guide') startSample('mouse');
   resetRound(); carving = true; $('exhibit').classList.add('carving'); $('workshop').hidden = false;
   updateCarvingTools();
-  $('stage-note').textContent = '線は下書き。指をはなすと、なめらかに整えて削ります';
+  $('stage-note').textContent = '指・マウスでなぞろう。カメラでは親指と人差し指をつまんで動かします';
 }
 function finishCarving() {
+  art.cancel(); saveDraft();
   carving = false; $('exhibit').classList.remove('carving'); $('workshop').hidden = true; resetRound();
   $('stage-note').textContent = source === 'camera' ? '作ったカボチャを、つかんで投げよう' : '作ったカボチャをドラッグして、相手へはなす';
 }
@@ -217,7 +242,7 @@ function carveAt(point) {
   const pose = carvingPose();
   const hit = pumpkin ? pumpkin.hit(point, pose, true) : { x: (point.x - pose.x) / (pose.w * .76) * 512 + 256, y: (point.y - pose.y) / (pose.h * .76) * 512 + 256 };
   const valid = art.stroke(hit);
-  carvingFeedback(!valid ? '表面から外れました。指をはなして、もう一度描こう' : art.options.mode === 'line' ? '下書き中 · はなすと線を削ります' : outlineInfo(art.draft.points).closed ? '輪郭がつながった！ はなすと切り抜けます' : '下書き中 · 描き始めの丸まで戻ろう');
+  carvingFeedback(!valid ? '表面から外れました。指をはなして、もう一度描こう' : art.options.mode === 'scrape' ? '皮を削っています。同じ場所を重ねてなぞると穴が開くよ' : art.options.mode === 'restore' ? 'なぞった部分を埋め直しています' : art.options.mode === 'line' ? '下書き中 · はなすと線を削ります' : outlineInfo(art.draft.points).closed ? '輪郭がつながった！ はなすと切り抜けます' : '下書き中 · 描き始めの丸まで戻ろう');
 }
 function carvingFeedback(message) { if ($('carving-feedback').textContent !== message) $('carving-feedback').textContent = message; }
 function finishStroke() {
@@ -225,12 +250,14 @@ function finishStroke() {
   if (!result) return;
   const messages = { cut: 'きれいに削れた！ 次の目や口を描こう', open: 'まだ輪郭が開いています。始めの丸に戻ってから、はなそう', small: 'もう少し大きく描いてみよう', interrupted: '下書きを取り消しました。表面の中でもう一度描こう' };
   carvingFeedback(messages[result.kind]);
+  if (result.kind === 'cut') { queueDraft(); $('undo').disabled = false; $('redo').disabled = true; }
 }
 function updateCarvingTools() {
   const cutout = art.options.mode === 'cutout';
   document.querySelectorAll('[data-carve-mode]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.carveMode === art.options.mode)));
   $('brush-control').hidden = cutout;
-  carvingFeedback(cutout ? '一筆で囲んで、始めの丸に戻ってはなす → 中を切り抜く' : '好きな線を描いてはなす → なめらかな線で削る');
+  $('undo').disabled = !art.history.length; $('redo').disabled = !art.future.length;
+  carvingFeedback(cutout ? '一筆で囲んで、始めの丸に戻ってはなす → 中を切り抜く' : art.options.mode === 'scrape' ? 'なぞって皮を削る → はなして、同じ場所を重ねて削ると穴が開く' : art.options.mode === 'restore' ? '埋めたい場所をなぞろう。あとから、また彫り直せます' : '好きな線を描いてはなす → なめらかな線で削る');
 }
 function pointerPoint(event) {
   const box = canvas.getBoundingClientRect();
@@ -354,7 +381,7 @@ function burst(pose, time) {
   c.restore();
 }
 function updateCue() {
-  if (carving) { cue('MAKE YOUR PUMPKIN', '描いた形が、きれいな穴に。', source === 'camera' ? '親指と人差し指をつまんで描く。はなすと、線を整えて削ります。' : 'ドラッグして描く。はなすと、線を整えて削ります。'); return; }
+  if (carving) { cue('MAKE YOUR PUMPKIN', 'ひと彫りずつ、自分だけの顔に。', source === 'camera' ? '親指と人差し指をつまんで動かそう。削り方は下から選べます。' : '指・マウスでなぞろう。重ねて削ったり、輪郭を囲んで抜いたり。'); return; }
   if (source === 'guide') return;
   if (phase === 'waiting') cue('GET READY', solo ? '左に映って、手を見せよう' : '2人で、左右の枠に入ろう', solo ? '右のお手本の相手に投げてみよう。' : 'オレンジが投げる人。むらさきがかぶる人。');
   if (phase === 'ready') cue('01 / つかむ', 'カボチャを、つかもう。', source === 'mouse' ? 'カボチャをマウスでつかんで、相手のほうへ。' : '画面のカボチャに手を重ねて、にぎる。つまんでもOK。');
@@ -437,13 +464,31 @@ $('mouse').onclick = () => { if (carving) finishCarving(); startSample('mouse');
 $('stop-camera').onclick = $('cancel-camera').onclick = () => { if (carving) finishCarving(); startSample('mouse'); };
 $('restart').onclick = resetRound;
 $('customize').onclick = openCarving; $('finish-carving').onclick = finishCarving;
-$('undo').onclick = () => { art.undo(); updateCarvingTools(); };
-$('clear').onclick = () => { art.clear(); updateCarvingTools(); };
-$('template').onclick = () => { art.template(); updateCarvingTools(); };
+$('undo').onclick = () => { art.undo(); updateCarvingTools(); queueDraft(); };
+$('redo').onclick = () => { art.redo(); updateCarvingTools(); queueDraft(); };
+$('clear').onclick = () => { art.clear(); updateCarvingTools(); queueDraft(); };
+$('template').onclick = () => { art.template(); updateCarvingTools(); queueDraft(); };
+$('gallery-link').href = GALLERY_URL;
+$('save-artwork').onclick = () => { try { downloadArtwork(); } catch (error) { notice(error.message); } };
+$('exhibit-artwork').onclick = () => {
+  try {
+    art.cancel(); saveDraft();
+    const artwork = artworkData();
+    if (artwork.mask.length > MAX_GALLERY_MASK_LENGTH) {
+      notice('この作品は細かいため、そのままでは展示できません。「作品ファイルを保存」で残せます。展示する場合は模様を少し減らして、もう一度試してください。', 12000);
+      return;
+    }
+    const data = JSON.stringify(artwork);
+    if (data.length > 45000) {
+      downloadArtwork(); window.open(`${GALLERY_URL}?submit=1`, '_blank', 'noopener');
+      notice('作品ファイルを保存しました。展示室でこのファイルを選んでください。', 8000);
+    } else window.open(`${GALLERY_URL}?submit=1#draft=${encodeURIComponent(data)}`, '_blank', 'noopener');
+  } catch (error) { notice(error.message); }
+};
 document.querySelectorAll('[data-carve-mode]').forEach(button => button.onclick = () => { art.configure({ mode: button.dataset.carveMode }); updateCarvingTools(); });
 $('smoothing').onchange = () => { art.configure({ smoothing: Number($('smoothing').value) }); updateCarvingTools(); };
 $('brush').oninput = () => art.configure({ size: Number($('brush').value) });
-document.querySelectorAll('[data-shape]').forEach(button => button.onclick = () => { art.cancel(); shape = button.dataset.shape; document.querySelectorAll('[data-shape]').forEach(item => item.setAttribute('aria-pressed', String(item === button))); });
+document.querySelectorAll('[data-shape]').forEach(button => button.onclick = () => { art.cancel(); shape = button.dataset.shape; document.querySelectorAll('[data-shape]').forEach(item => item.setAttribute('aria-pressed', String(item === button))); queueDraft(); });
 function toggleSettings(open) { $('settings').hidden = !open; $('settings-button').setAttribute('aria-expanded', String(open)); }
 $('settings-button').onclick = () => toggleSettings($('settings').hidden); $('close-settings').onclick = () => toggleSettings(false);
 $('switch-camera').onclick = () => { toggleSettings(false); startCamera(solo); };
@@ -462,4 +507,7 @@ $('fullscreen').onclick = async () => {
   try { if (document.fullscreenElement) await document.exitFullscreen(); else if ($('exhibit').requestFullscreen) await $('exhibit').requestFullscreen(); else notice('このブラウザーでは全画面表示に対応していません'); }
   catch { notice('全画面にできませんでした。ブラウザーの全画面操作をお試しください。'); }
 };
-startSample('guide'); requestAnimationFrame(render);
+restoreDraft(); startSample('guide');
+if (new URLSearchParams(location.search).has('carve')) openCarving();
+document.addEventListener('visibilitychange', () => { if (document.hidden) { art.cancel(); saveDraft(); } });
+requestAnimationFrame(render);
