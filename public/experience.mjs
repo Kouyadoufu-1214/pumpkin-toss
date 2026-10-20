@@ -5,6 +5,7 @@ import { PumpkinArt } from './pumpkin-art.mjs';
 import { outlineInfo } from './carving-path.mjs';
 import { encodeMask, decodeMask, validateArtwork, MAX_GALLERY_MASK_LENGTH } from './artwork-codec.mjs';
 import { GALLERY_URL } from './gallery-config.mjs';
+import { drawWorkshopScene } from './workshop-scene.mjs';
 
 const $ = id => document.getElementById(id);
 const canvas = $('screen'), c = canvas.getContext('2d'), video = $('camera-video');
@@ -381,7 +382,7 @@ function burst(pose, time) {
   c.restore();
 }
 function updateCue() {
-  if (carving) { cue('MAKE YOUR PUMPKIN', 'ひと彫りずつ、自分だけの顔に。', source === 'camera' ? '親指と人差し指をつまんで動かそう。削り方は下から選べます。' : '指・マウスでなぞろう。重ねて削ったり、輪郭を囲んで抜いたり。'); return; }
+  if (carving) { cue('HALLOWEEN WORKSHOP', '月夜のかぼちゃ工房', source === 'camera' ? '親指と人差し指をつまんで、きみだけの顔を彫ろう。' : '指やマウスでひと彫り。きみだけのジャックオランタンに。'); return; }
   if (source === 'guide') return;
   if (phase === 'waiting') cue('GET READY', solo ? '左に映って、手を見せよう' : '2人で、左右の枠に入ろう', solo ? '右のお手本の相手に投げてみよう。' : 'オレンジが投げる人。むらさきがかぶる人。');
   if (phase === 'ready') cue('01 / つかむ', 'カボチャを、つかもう。', source === 'mouse' ? 'カボチャをマウスでつかんで、相手のほうへ。' : '画面のカボチャに手を重ねて、にぎる。つまんでもOK。');
@@ -398,7 +399,7 @@ function render(time) {
     if (solo && !carving) person(sampleFace('right'), false, time);
   } else { const roles = sampleRoles(); caster = roles.caster; receiver = roles.receiver; }
   if (carving) {
-    c.fillStyle = '#17111ca8'; c.fillRect(0, 0, W, H); drawPumpkin(carvingPose());
+    drawWorkshopScene(c, { width: W, height: H, camera: source === 'camera' }); drawPumpkin(carvingPose());
     if (source === 'camera') { const done = carvingDonePoint(); handCursor(controlHand, pinched); dwellButton(done.x, done.y, 'できた', time); }
     updateCue(); return;
   }

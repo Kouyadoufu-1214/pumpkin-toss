@@ -13,3 +13,114 @@
 @media(max-width:800px){.bar #setup-button{display:none}.carving .workshop{flex-wrap:wrap}.workshop-finish{display:grid;grid-template-columns:1fr 1fr;width:100%;min-width:0}.workshop-finish>span{grid-column:1/-1}.workshop-finish button{white-space:normal;padding:12px 8px}.bar .gallery-link{font-size:10px;padding:6px 4px}.drawing-tools{flex-basis:100%}}
 @media(prefers-reduced-motion:reduce){.spinner{animation:none}}
 
+/* Moonlit Halloween workshop. All theme changes stay within carving mode. */
+.craft-edition,.craft-flow{display:none}
+.carving{
+  --bg:#15121d;--paper:#fff0d8;--muted:#c2b2c7;--orange:#ffb260;--violet:#d5c4f1;--line:#e9bb8c30;
+  min-height:730px;grid-template-rows:62px minmax(320px,1fr) auto 38px;
+  background:radial-gradient(ellipse at 10% 100%,#46233155,transparent 55%),var(--bg);
+}
+.carving .play-edition,.carving #flow{display:none}
+.carving .craft-edition{display:inline;color:var(--orange);letter-spacing:1.4px}
+.carving .bar{border-bottom:1px solid #e7b77c18}
+.carving .brand{font-family:Georgia,"Yu Mincho",serif;letter-spacing:1.8px;font-size:16px}
+.carving .brand span{color:var(--orange);text-shadow:0 0 18px #ffb26060}
+.carving .gallery-link{color:var(--paper);border:1px solid var(--line);border-radius:6px;padding:8px 12px}
+.carving .bar button{color:var(--muted)}
+.carving .theater{
+  margin:0 18px 12px;border:1px solid #ae7c493f;border-radius:18px;
+  background:#191624;box-shadow:inset 0 0 0 5px #ffb26004,0 8px 24px #08060d30;
+}
+.carving .theater::after{content:"";position:absolute;inset:7px;border:1px solid #ffdfb21a;border-radius:12px;pointer-events:none}
+.carving .cue{top:18px;left:17%;right:17%;text-shadow:0 2px 20px #100b19}
+.carving .cue>span{font-family:Georgia,serif;font-size:10px;letter-spacing:3px;color:var(--orange)}
+.carving .cue h1{font-family:"Yu Mincho","Hiragino Mincho ProN",serif;font-size:clamp(24px,2.5vw,36px);letter-spacing:.13em;font-weight:700;margin:8px 0 6px}
+.carving .cue p{font-size:12px;color:#ded0e4;line-height:1.7}
+.carving .workshop{
+  background:linear-gradient(115deg,#30202c,#241d2b 58%,#29202c);
+  border:1px solid #a375514f;border-top:2px solid #ce9860;border-radius:12px;
+  margin:0 18px 12px;padding:17px 20px;gap:22px;box-shadow:0 5px 22px #0a07162b;
+}
+.workshop-tools-heading{display:flex;align-items:center;gap:16px;margin-bottom:11px}
+.workshop-tools-heading strong{font-family:"Yu Mincho","Hiragino Mincho ProN",serif;font-size:16px;letter-spacing:.05em;color:var(--paper)}
+.workshop-tools-heading>span{font-size:11px;color:var(--muted)}
+.carving .drawing-options{align-items:stretch;gap:14px;flex-wrap:wrap}
+.carving .mode-switch{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;flex:1;min-width:470px}
+.carving .mode-switch button{
+  display:flex;gap:9px;align-items:center;text-align:left;padding:10px 11px;min-height:59px;
+  color:#ebddec;background:#19162280;border:1px solid #8b718c66;border-radius:8px;
+  box-shadow:inset 0 1px #ffffff06;font-size:12px;line-height:1.5;
+}
+.carving .mode-switch button:hover{background:#3e2e41;border-color:#d8b6a4}
+.carving .mode-switch button[aria-pressed=true]{background:#ffd39a;color:#372016;border-color:#ffd39a;box-shadow:0 3px 16px #ffb26014}
+.carving .mode-switch small{display:block;font-size:9px;font-weight:400;white-space:nowrap;opacity:.82;margin-top:2px}
+.tool-icon{width:24px;height:24px;flex:none;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.carving .tool-adjustments{display:flex;flex-direction:column;justify-content:center;gap:10px;min-width:158px}
+.carving .tool-adjustments label{display:flex;justify-content:space-between;gap:12px;font-size:11px;color:var(--muted)}
+.carving .drawing-options select{background:#1c1825;border:1px solid #82687c;color:var(--paper);padding:5px 8px;min-height:32px;font-size:12px}
+.carving .tool-adjustments input{width:88px;min-height:24px;margin:0;accent-color:var(--orange)}
+.carving #carving-feedback{font-size:11px;color:#f3cf9f;margin:10px 0;min-height:17px;line-height:1.6}
+.carving .shape-tools{gap:6px}
+.carving .shape-tools>span{font-size:10px;color:var(--muted);margin-right:4px}
+.carving .shape-tools button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:35px;padding:7px 9px;font-size:11px;border-color:#96798a48;color:#dfcfde;background:#1c172530}
+.carving .shape-tools button:hover{background:#453041;border-color:#c7966c}
+.carving .shape-tools button[aria-pressed=true]{border-color:#e3a66e;background:#754b2e45;color:#ffd39a}
+.carving .shape-tools button:disabled{cursor:default;opacity:.4}
+.carving .shape-tools #undo{margin-left:7px;border-color:#96798a60}
+.shape-mark{display:inline-block;width:15px;height:14px;border:1.4px solid currentColor;border-radius:46%;position:relative;font-style:normal}
+.shape-mark::before{content:"";position:absolute;left:6px;top:-4px;height:4px;border-left:1.4px solid currentColor;transform:rotate(15deg)}
+[data-shape=tall] .shape-mark{width:12px;height:16px}
+[data-shape=wide] .shape-mark{width:19px;height:12px}
+.carving .workshop-finish{min-width:226px;padding-left:22px;border-left:1px dashed #b0826559;gap:9px;align-self:stretch;justify-content:center}
+.carving .workshop-finish strong{font-family:"Yu Mincho","Hiragino Mincho ProN",serif;font-size:14px;line-height:1.6;letter-spacing:.02em}
+.carving .workshop-finish .primary{font-size:12px;padding:14px 13px;border-radius:6px;background:#ffb260;border-color:#ffb260;box-shadow:0 4px 20px #ff9c3e18}
+.carving .workshop-finish .primary:hover{background:#ffd199;border-color:#ffd199}
+.carving .workshop-finish .secondary{font-size:11px;padding:10px 12px;border-radius:6px;background:transparent;border-color:#9b7b9255;color:#e1cfe4}
+.carving .workshop-finish>span{font-size:10px;color:#c4b6c9;line-height:1.6;text-align:center}
+.carving footer{border-color:#ce986025;color:#b4a3bb;font-size:9px}
+.carving .craft-flow{display:flex;align-items:center;gap:12px;font-size:10px}
+.craft-flow i{font-style:normal;font-size:11px;color:var(--orange)}
+.craft-flow b{color:#fbd7a5;font-weight:500}
+@media(max-width:1120px) and (min-width:801px){
+  .carving .mode-switch{min-width:400px}.carving .mode-switch button{padding:9px 7px;gap:6px;font-size:11px}
+  .carving .mode-switch button>span{min-width:0}.carving .mode-switch small{white-space:normal}
+  .carving .tool-adjustments{flex-basis:100%;flex-direction:row;justify-content:flex-start;align-items:center;gap:20px}
+  .carving .workshop-finish{min-width:206px;padding-left:16px}.carving .workshop{gap:16px}
+}
+@media(max-width:800px){
+  .carving .workshop{padding:15px;gap:15px}.carving .workshop-finish{min-width:0;padding:13px 0 0;border-left:0;border-top:1px dashed #b0826559;gap:9px 12px}
+  .carving .workshop-finish strong{grid-column:1/-1;text-align:center;font-size:14px}
+  .carving .workshop-finish>span{grid-column:1/-1}
+  .carving .tool-adjustments{flex-direction:row;gap:25px;align-items:center}
+  .carving .bar .gallery-link{padding:8px;font-size:10px}
+  .carving .shape-tools #undo{margin-left:0}
+}
+@media(max-width:620px){
+  .carving{height:auto;min-height:100dvh;grid-template-rows:56px max(370px,53svh) auto auto}
+  .carving .bar{padding:0 12px}.carving .brand{font-size:11px;letter-spacing:.6px}.carving .brand span{font-size:21px;margin-right:4px}
+  .carving .bar #settings-button{font-size:10px}.carving .bar #fullscreen{display:none}
+  .carving .bar nav>a,.carving .bar nav>button{min-height:44px;display:inline-flex;align-items:center}
+  .carving .theater{margin:0 8px 10px;border-radius:14px}.carving .theater::after{inset:5px;border-radius:9px}
+  .carving .theater::before{content:"";position:absolute;left:17px;top:110px;width:26px;height:26px;border-radius:50%;pointer-events:none;background:radial-gradient(circle at 36% 37%,#cab993 0 12%,transparent 14%),#f6e8c1;opacity:.6;box-shadow:0 0 30px #f6e8c12e}
+  .carving .cue{top:16px;left:5%;right:5%}.carving .cue h1{font-size:25px;letter-spacing:.07em;margin:6px 0}
+  .carving .cue>span{font-size:9px;letter-spacing:2px}.carving .cue p{font-size:10px;max-width:270px;margin:auto;line-height:1.8}
+  .carving .workshop{margin:0 8px 10px;padding:14px 12px}
+  .workshop-tools-heading{justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:12px}.workshop-tools-heading strong{font-size:15px;flex-shrink:0}.workshop-tools-heading>span{font-size:10px}
+  .carving .mode-switch{min-width:0;width:100%;flex-basis:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .carving .mode-switch button{min-height:62px;padding:10px;font-size:12px;gap:8px}.carving .mode-switch button>span{min-width:0}.carving .mode-switch small{font-size:10px;white-space:normal}
+  .carving .drawing-options{gap:12px}
+  .carving .tool-adjustments{width:100%;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+  .carving .tool-adjustments label{font-size:11px;gap:8px}.carving .drawing-options select{font-size:16px;min-height:44px;max-width:94px}
+  .carving .tool-adjustments input{width:94px;min-height:44px}
+  .carving #carving-feedback{font-size:11px;line-height:1.8;min-height:38px;margin:12px 0}
+  .carving .shape-tools{gap:7px}.carving .shape-tools>span{width:100%;font-size:11px;margin:0 0 2px}
+  .carving .shape-tools button{min-height:44px;padding:10px;font-size:11px}
+  .carving .shape-tools [data-shape]{flex:0 0 calc((100% - 14px)/3);min-width:0;white-space:nowrap}
+  .carving .workshop-finish .primary,.carving .workshop-finish .secondary{min-height:48px;font-size:11px;padding:12px 9px;white-space:normal}
+  .carving footer{padding:12px 10px 16px;gap:10px}.carving .craft-flow{gap:9px;font-size:10px}
+}
+@media(max-height:550px) and (min-width:621px){
+  .exhibit.carving{height:auto;min-height:100dvh;grid-template-rows:44px 350px auto}
+  .carving .bar{height:44px}.carving .cue{top:12px}.carving .cue h1{font-size:24px}.carving .cue>span{display:block}
+}
+
