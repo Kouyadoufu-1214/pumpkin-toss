@@ -6,16 +6,16 @@
   <link rel="stylesheet" href="experience.css">
 </head>
 <body>
-<main id="exhibit" class="exhibit">
+<main id="exhibit" class="exhibit carving">
   <header class="bar">
     <a class="brand" href="./"><span aria-hidden="true">✷</span> PUMPKIN TOSS</a><span class="edition"><span class="play-edition">文化祭 / 体験プロトタイプ</span><span class="craft-edition">HALLOWEEN / 手づくりの灯り</span></span>
     <nav><a id="gallery-link" class="gallery-link" target="_blank" rel="noopener">みんなの展示室 ↗</a><button id="setup-button">会場のイメージ</button><button id="settings-button" aria-expanded="false" aria-controls="settings">設定</button><button id="fullscreen">全画面 ↗</button></nav>
   </header>
   <section id="theater" class="theater" aria-label="スクリーン体験">
     <video id="camera-video" muted playsinline hidden></video>
-    <canvas id="screen" width="1280" height="720" aria-label="カボチャをつかんで相手へ投げるスクリーン。マウスで試すを選ぶと、ドラッグして投げられます。"></canvas>
+    <canvas id="screen" width="1280" height="720" aria-label="かぼちゃを彫り、完成した顔を相手へ投げて遊べるスクリーン。"></canvas>
     <div class="screen-top"><span id="source-badge" class="badge">● お手本</span><span id="renderer-status"></span></div>
-    <div id="cue" class="cue" aria-live="polite"><span id="cue-step">SCREEN MAGIC / 01</span><h1 id="cue-title">つかんで、投げて、スポッ。</h1><p id="cue-detail">画面の中で、友だちがカボチャになる。</p></div>
+    <div id="cue" class="cue" aria-live="polite"><span id="cue-step">HALLOWEEN WORKSHOP</span><h1 id="cue-title">月夜のかぼちゃ工房</h1><p id="cue-detail">指やマウスでひと彫り。きみだけのジャックオランタンに。</p></div>
     <div class="screen-bottom"><span id="stage-note">お手本の映像です</span><button id="restart" class="glass" hidden>もう一度投げる ↶</button></div>
     <div id="message" class="message" role="status" hidden></div>
     <div id="loading" class="loading" hidden><div class="spinner"></div><strong>カメラを準備しています</strong><p>カメラの使用を許可してください。初回は少し時間がかかります。</p><button id="cancel-camera" class="glass">キャンセル</button></div>
@@ -26,7 +26,7 @@
     <div class="minor-controls"><button id="guide" class="text-button">お手本を見る</button><button id="mouse" class="text-button">マウスで試す</button><button id="customize" class="text-button">かぼちゃを作る ✎</button><button id="stop-camera" class="text-button" hidden>カメラを停止</button></div>
   </section>
   <footer><div id="flow"><b>01 つかむ</b><i>→</i><span>02 相手に投げる</span><i>→</i><span>03 スポッとかぶる</span></div><div class="craft-flow"><span>形を選ぶ</span><i>✦</i><b>自分の顔を彫る</b><i>✦</i><span>みんなで飾る</span></div><span>カメラ映像はこの端末で処理します</span></footer>
-  <section id="workshop" class="workshop" aria-label="かぼちゃ作り" hidden>
+  <section id="workshop" class="workshop" aria-label="かぼちゃ作り">
     <div class="drawing-tools">
       <div class="workshop-tools-heading"><strong>どんな顔にしよう？</strong><span>道具を選んで、ひと彫りずつ。</span></div>
       <div class="tools drawing-options">
@@ -38,7 +38,7 @@
         </div>
         <div class="tool-adjustments"><label>手ぶれ補正 <select id="smoothing"><option value="1">軽め</option><option value="2" selected>標準</option><option value="3">強め</option></select></label><label id="brush-control">道具の太さ <input id="brush" type="range" min="6" max="60" value="28"></label></div>
       </div>
-      <p id="carving-feedback" role="status">一筆で囲んで、始めの丸に戻ってはなす → 中を切り抜く</p>
+      <p id="carving-feedback" role="status">なぞって皮を削る → はなして、同じ場所を重ねて削ると穴が開く</p>
       <div class="tools shape-tools"><span>かぼちゃの形</span><button data-shape="round" aria-pressed="true"><i class="shape-mark" aria-hidden="true"></i>まる</button><button data-shape="tall" aria-pressed="false"><i class="shape-mark" aria-hidden="true"></i>たて長</button><button data-shape="wide" aria-pressed="false"><i class="shape-mark" aria-hidden="true"></i>よこ長</button><button id="undo">↶ 戻す</button><button id="redo">↷ やり直す</button><button id="clear">白紙から作る</button><button id="template">お手本の顔</button><button id="save-artwork">作品ファイルを保存</button></div>
     </div>
     <div class="workshop-finish"><strong>できたら、みんなの展示室へ。</strong><button id="exhibit-artwork" class="primary">完成した作品を展示する ↗</button><button id="finish-carving" class="secondary">この顔で投げる →</button><span id="draft-status" role="status">制作途中はこの端末に保存します</span></div>

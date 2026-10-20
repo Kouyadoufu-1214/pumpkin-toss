@@ -508,7 +508,6 @@ $('fullscreen').onclick = async () => {
   try { if (document.fullscreenElement) await document.exitFullscreen(); else if ($('exhibit').requestFullscreen) await $('exhibit').requestFullscreen(); else notice('このブラウザーでは全画面表示に対応していません'); }
   catch { notice('全画面にできませんでした。ブラウザーの全画面操作をお試しください。'); }
 };
-restoreDraft(); startSample('guide');
-if (new URLSearchParams(location.search).has('carve')) openCarving();
+restoreDraft(); openCarving();
 document.addEventListener('visibilitychange', () => { if (document.hidden) { art.cancel(); saveDraft(); } });
 requestAnimationFrame(render);
