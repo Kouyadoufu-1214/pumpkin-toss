@@ -1,7 +1,7 @@
 import { clamp, distance, isPinched } from './interaction.mjs';
 import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose } from './exhibit-logic.mjs';
 import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs';
-import { PumpkinArt } from './pumpkin-art.mjs';
+import { PumpkinArt } from './pumpkin-art.mjs?v=20261020-blank';
 import { outlineInfo } from './carving-path.mjs';
 import { encodeMask, decodeMask, validateArtwork, MAX_GALLERY_MASK_LENGTH } from './artwork-codec.mjs';
 import { GALLERY_URL } from './gallery-config.mjs';

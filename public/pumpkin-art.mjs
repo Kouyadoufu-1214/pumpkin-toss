@@ -6,7 +6,7 @@ export class PumpkinArt {
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
     this.history = []; this.future = []; this.draft = new FreehandStroke(); this.base = null;
     this.options = { mode: 'scrape', smoothing: 2, size: 28 };
-    this.changed = true; this.template(); this.history = [];
+    this.changed = true;
   }
   save() { this.future = []; this.history.push(this.ctx.getImageData(0, 0, 512, 512)); if (this.history.length > 20) this.history.shift(); }
   cancel() {
