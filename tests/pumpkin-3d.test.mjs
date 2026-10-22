@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from '../public/vendor/three/three.module.js';
-import { faceQuaternion, blendOrientation, createPumpkinGeometry, projectedCarvingPoint } from '../public/pumpkin-3d.mjs';
+import { Pumpkin3D, faceQuaternion, blendOrientation, createPumpkinGeometry, projectedCarvingPoint } from '../public/pumpkin-3d.mjs';
 
 const near = (actual, expected, epsilon = 1e-6) => assert.ok(Math.abs(actual - expected) < epsilon, `${actual} != ${expected}`);
 test('face pose ignores position and scale and mirrors yaw with the video', () => {
@@ -54,4 +54,56 @@ test('pumpkin mesh is a closed-volume shape with visible front and back surfaces
   const back = new THREE.Raycaster(new THREE.Vector3(.12, .1, -5), new THREE.Vector3(0, 0, 1)).intersectObject(mesh)[0];
   assert.ok(front.point.z > .8); assert.ok(back.point.z < -.8);
   geometry.dispose(); mesh.material.dispose();
+});
+
+function renderHarness() {
+  const calls = { render: 0, copy: 0 };
+  let lost = false;
+  const pumpkin = Object.assign(Object.create(Pumpkin3D.prototype), {
+    disposed: false, renderError: null, wallsDirty: false,
+    inside: { material: {} }, place() {},
+    renderer: {
+      getContext: () => ({ isContextLost: () => lost }),
+      render() { calls.render++; }, domElement: {},
+    },
+  });
+  const context = { drawImage() { calls.copy++; } };
+  return { pumpkin, calls, draw: () => pumpkin.draw(context, {}), lose: value => { lost = value; } };
+}
+
+test('a lost WebGL context requests fallback and recovers without replacing the artwork', () => {
+  const h = renderHarness();
+  assert.equal(h.draw(), true);
+  h.lose(true);
+  assert.equal(h.draw(), false);
+  assert.equal(h.draw(), false);
+  assert.deepEqual(h.calls, { render: 1, copy: 1 }, 'a transparent lost buffer is never copied');
+  h.lose(false);
+  assert.equal(h.draw(), true);
+  assert.deepEqual(h.calls, { render: 2, copy: 2 });
+});
+
+test('context loss during rendering does not copy the empty output', () => {
+  const h = renderHarness();
+  h.pumpkin.renderer.render = () => h.lose(true);
+  assert.equal(h.draw(), false);
+  assert.equal(h.calls.copy, 0);
+});
+
+test('shader failures and disposed renderers request fallback without copying an empty frame', () => {
+  for (const failure of ['shader', 'disposed']) {
+    const h = renderHarness();
+    if (failure === 'shader') h.pumpkin.renderer.render = () => { h.pumpkin.renderError = new Error('Shader unavailable'); };
+    else h.pumpkin.disposed = true;
+    assert.equal(h.draw(), false);
+    assert.equal(h.draw(), false);
+    assert.equal(h.calls.copy, 0);
+  }
+});
+
+test('unexpected renderer exceptions remain observable by the application fallback', () => {
+  const h = renderHarness();
+  h.pumpkin.renderer.render = () => { throw new Error('GPU unavailable'); };
+  assert.throws(h.draw, /GPU unavailable/);
+  assert.equal(h.calls.copy, 0);
 });

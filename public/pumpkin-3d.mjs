@@ -70,6 +70,11 @@ export class Pumpkin3D {
     this.width = width; this.height = height; this.disposed = false;
     this.maskContext = maskCanvas.getContext('2d');
     this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, preserveDrawingBuffer: true });
+    this.renderError = null;
+    this.renderer.debug.onShaderError = () => {
+      if (!this.renderError) console.warn('Pumpkin shader unavailable; using the canvas fallback.');
+      this.renderError = new Error('The pumpkin shader could not be compiled.');
+    };
     this.renderer.setSize(width, height, false); this.renderer.setPixelRatio(1);
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -154,6 +159,9 @@ export class Pumpkin3D {
   }
 
   draw(context, pose) {
+    // A lost WebGL context renders a transparent buffer without throwing.
+    // Let the caller draw the canvas fallback until Three.js restores it.
+    if (this.disposed || this.renderError || this.renderer.getContext().isContextLost()) return false;
     const now = performance.now();
     if (this.wallsDirty && now - this.lastWallsAt >= 80) {
       const next = createCutWalls(this.maskContext.getImageData(0, 0, 512, 512), this.surface);
@@ -162,7 +170,9 @@ export class Pumpkin3D {
     }
     this.inside.material.emissiveIntensity = 1.05 + .035 * Math.sin(now * .004) + .018 * Math.sin(now * .009);
     this.place(pose); this.renderer.render(this.scene, this.camera);
+    if (this.renderError || this.renderer.getContext().isContextLost()) return false;
     context.drawImage(this.renderer.domElement, 0, 0);
+    return true;
   }
 
   hit(point, pose, requireFront = false) {

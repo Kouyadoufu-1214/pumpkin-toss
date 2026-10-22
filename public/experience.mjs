@@ -1,6 +1,6 @@
 import { clamp, distance, isPinched } from './interaction.mjs';
 import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose } from './exhibit-logic.mjs';
-import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs';
+import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs?v=20261022-render-recovery';
 import { PumpkinArt } from './pumpkin-art.mjs?v=20261020-blank';
 import { outlineInfo } from './carving-path.mjs';
 import { encodeMask, decodeMask, validateArtwork, MAX_GALLERY_MASK_LENGTH } from './artwork-codec.mjs';
@@ -10,7 +10,7 @@ import { drawWorkshopScene } from './workshop-scene.mjs';
 const $ = id => document.getElementById(id);
 const canvas = $('screen'), c = canvas.getContext('2d'), video = $('camera-video');
 const W = 1280, H = 720, art = new PumpkinArt(), toss = new TossGesture(), dwell = new DwellAction();
-let pumpkin;
+let pumpkin, pumpkin3DVisible = false;
 try { pumpkin = new Pumpkin3D(art.canvas, W, H); $('renderer-status').textContent = '3D PUMPKIN'; }
 catch (error) { $('renderer-status').textContent = '簡易表示'; console.warn('3D renderer unavailable', error); }
 let source = 'guide', solo = false, swapped = false, phase = 'ready', carving = false, shape = 'round';
@@ -257,7 +257,7 @@ function finishCarving() {
 const carvingPose = () => { const [sx, sy] = shapeScale(); return { x: 640, y: 422, w: 530 * sx, h: 480 * sy }; };
 function carveAt(point) {
   const pose = carvingPose();
-  const hit = pumpkin ? pumpkin.hit(point, pose, true) : { x: (point.x - pose.x) / (pose.w * .76) * 512 + 256, y: (point.y - pose.y) / (pose.h * .76) * 512 + 256 };
+  const hit = pumpkin3DVisible && pumpkin ? pumpkin.hit(point, pose, true) : { x: (point.x - pose.x) / (pose.w * .76) * 512 + 256, y: (point.y - pose.y) / (pose.h * .76) * 512 + 256 };
   const valid = art.stroke(hit);
   carvingFeedback(!valid ? '表面から外れました。指をはなして、もう一度描こう' : art.options.mode === 'scrape' ? '皮を削っています。同じ場所を重ねてなぞると穴が開くよ' : art.options.mode === 'restore' ? 'なぞった部分を埋め直しています' : art.options.mode === 'line' ? '下書き中 · はなすと線を削ります' : outlineInfo(art.draft.points).closed ? '輪郭がつながった！ はなすと切り抜けます' : '下書き中 · 描き始めの丸まで戻ろう');
 }
@@ -370,8 +370,23 @@ function zones() {
   c.restore();
 }
 function drawPumpkin(pose) {
+  pumpkin3DVisible = false;
   if (!pose) return;
-  if (pumpkin) { if (art.changed) { pumpkin.updateMask(); art.changed = false; } pumpkin.draw(c, pose); return; }
+  if (pumpkin) {
+    try {
+      if (art.changed) { pumpkin.updateMask(); art.changed = false; }
+      pumpkin3DVisible = pumpkin.draw(c, pose) === true;
+    } catch (error) {
+      // A broken renderer must not hide the artwork or retry the same error
+      // every frame. The mask stays available for drawing, carving and saving.
+      const failed = pumpkin; pumpkin = null;
+      console.warn('3D drawing unavailable; using the 2D pumpkin.', error);
+      try { failed.dispose(); } catch { /* Keep the artwork usable even if cleanup fails. */ }
+    }
+  }
+  const status = pumpkin3DVisible ? '3D PUMPKIN' : '簡易表示';
+  if ($('renderer-status').textContent !== status) $('renderer-status').textContent = status;
+  if (pumpkin3DVisible) return;
   c.save(); c.translate(pose.x, pose.y); c.rotate(pose.roll || 0);
   c.fillStyle = '#dc7320'; c.beginPath(); c.ellipse(0, 0, pose.w * .39, pose.h * .4, 0, 0, Math.PI * 2); c.fill();
   line([{ x: -2, y: -pose.h * .39 }, { x: 8, y: -pose.h * .5 }], '#60744b', 15);
