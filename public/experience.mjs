@@ -57,7 +57,20 @@ function notice(text, duration = 3800) {
   clearTimeout(messageTimer); $('message').textContent = text; $('message').hidden = false;
   messageTimer = setTimeout(() => $('message').hidden = true, duration);
 }
+function hideThrowResult() {
+  const result = $('throw-result');
+  if (result.contains(document.activeElement)) $('cue-title').focus({ preventScroll: true });
+  result.hidden = true; $('exhibit').classList.remove('throw-complete');
+}
+function updateThrowResult(time) {
+  const result = $('throw-result');
+  if (!result.hidden || carving || loading || source === 'guide' || phase !== 'worn' || !receiver || time - wornSince < 1200) return;
+  if (!$('settings').hidden || $('setup-dialog').open) return;
+  dwell.reset(); result.hidden = false; $('exhibit').classList.add('throw-complete');
+  $('throw-result-title').focus({ preventScroll: true }); result.scrollIntoView({ block: 'nearest' });
+}
 function resetRound() {
+  hideThrowResult();
   phase = source === 'camera' ? 'waiting' : 'ready'; toss.cancel(); heldPose = flight = smoothTarget = null;
   controlHand = null; gripped = pinched = false; dwell.reset(); art.cancel(); pointer = null; roleSince = 0;
   $('restart').hidden = true;
@@ -85,6 +98,7 @@ function targetPose(face) {
 function currentTarget() { return targetPose(receiver); }
 function launch(from, target) {
   if (!target) { cancelHold(); notice('かぶる人の顔が映ってから投げよう'); return; }
+  hideThrowResult();
   flight = { start: { ...from }, target: { ...target }, since: performance.now() };
   phase = 'flying'; toss.cancel(); gripped = false; heldPose = null; dwell.reset(); tone('throw');
 }
@@ -209,6 +223,7 @@ function acceptTracking(data) {
     return;
   }
   if (phase === 'worn') {
+    if (!$('throw-result').hidden) { dwell.reset(); return; }
     if (dwell.update(distance(controlHand.palm, { x: 640, y: 625 }) < 60, time)) resetRound();
     return;
   }
@@ -237,6 +252,7 @@ function finishCarving() {
   art.cancel(); saveDraft();
   carving = false; $('exhibit').classList.remove('carving'); $('workshop').hidden = true; resetRound();
   $('stage-note').textContent = source === 'camera' ? '作ったカボチャを、つかんで投げよう' : '作ったカボチャをドラッグして、相手へはなす';
+  updateCue(); $('theater').scrollIntoView({ block: 'start' }); $('cue-title').focus({ preventScroll: true });
 }
 const carvingPose = () => { const [sx, sy] = shapeScale(); return { x: 640, y: 422, w: 530 * sx, h: 480 * sy }; };
 function carveAt(point) {
@@ -266,7 +282,7 @@ function pointerPoint(event) {
   return { x: (event.clientX - box.left - (box.width - W * scale) / 2) / scale, y: (event.clientY - box.top - (box.height - H * scale) / 2) / scale };
 }
 canvas.addEventListener('pointerdown', event => {
-  if (loading) return;
+  if (loading || !$('throw-result').hidden) return;
   const point = pointerPoint(event);
   if (carving) { art.cancel(); pointer = event.pointerId; canvas.setPointerCapture(pointer); carveAt(point); return; }
   if (source === 'guide') return;
@@ -441,7 +457,8 @@ function render(time) {
         smoothTarget.quaternion = blendOrientation(smoothTarget.quaternion, target.quaternion, .25); smoothTarget.yaw = target.yaw;
         pose = smoothTarget; burst(pose, time);
       } else { pose = null; smoothTarget = null; }
-      if (source === 'camera') dwellButton(640, 625, 'もう一度', time);
+      updateThrowResult(time);
+      if (source === 'camera' && $('throw-result').hidden) dwellButton(640, 625, 'もう一度', time);
     }
     const roles = sampleRoles();
     if (source === 'mouse' || phase !== 'waiting') {
@@ -464,6 +481,8 @@ $('guide').onclick = () => { if (carving) finishCarving(); startSample('guide');
 $('mouse').onclick = () => { if (carving) finishCarving(); startSample('mouse'); };
 $('stop-camera').onclick = $('cancel-camera').onclick = () => { if (carving) finishCarving(); startSample('mouse'); };
 $('restart').onclick = resetRound;
+$('retry-throw').onclick = () => { resetRound(); updateCue(); $('theater').scrollIntoView({ block: 'start' }); };
+$('edit-result').onclick = () => { openCarving(); updateCue(); $('theater').scrollIntoView({ block: 'start' }); };
 $('customize').onclick = openCarving; $('finish-carving').onclick = finishCarving;
 $('undo').onclick = () => { art.undo(); updateCarvingTools(); queueDraft(); };
 $('redo').onclick = () => { art.redo(); updateCarvingTools(); queueDraft(); };
@@ -476,7 +495,7 @@ $('exhibit-artwork').onclick = () => {
     art.cancel(); saveDraft();
     const artwork = artworkData();
     if (artwork.mask.length > MAX_GALLERY_MASK_LENGTH) {
-      notice('この作品は細かいため、そのままでは展示できません。「作品ファイルを保存」で残せます。展示する場合は模様を少し減らして、もう一度試してください。', 12000);
+      notice('この作品は細かいため、そのままでは展示できません。「もう少し彫り直す」から「作品ファイルを保存」で残すか、模様を少し減らして、もう一度試してください。', 12000);
       return;
     }
     const data = JSON.stringify(artwork);

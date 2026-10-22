@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#14131b"><title>Pumpkin Toss — 投げたら、友だちがカボチャに。</title>
-  <link rel="stylesheet" href="experience.css">
+  <link rel="stylesheet" href="experience.css?v=20261022-throw-gallery">
 </head>
 <body>
 <main id="exhibit" class="exhibit carving">
@@ -15,17 +15,21 @@
     <video id="camera-video" muted playsinline hidden></video>
     <canvas id="screen" width="1280" height="720" aria-label="かぼちゃを彫り、完成した顔を相手へ投げて遊べるスクリーン。"></canvas>
     <div class="screen-top"><span id="source-badge" class="badge">● お手本</span><span id="renderer-status"></span></div>
-    <div id="cue" class="cue" aria-live="polite"><span id="cue-step">HALLOWEEN WORKSHOP</span><h1 id="cue-title">月夜のかぼちゃ工房</h1><p id="cue-detail">指やマウスでひと彫り。きみだけのジャックオランタンに。</p></div>
+    <div id="cue" class="cue" aria-live="polite"><span id="cue-step">HALLOWEEN WORKSHOP</span><h1 id="cue-title" tabindex="-1">月夜のかぼちゃ工房</h1><p id="cue-detail">指やマウスでひと彫り。きみだけのジャックオランタンに。</p></div>
     <div class="screen-bottom"><span id="stage-note">お手本の映像です</span><button id="restart" class="glass" hidden>もう一度投げる ↶</button></div>
     <div id="message" class="message" role="status" hidden></div>
     <div id="loading" class="loading" hidden><div class="spinner"></div><strong>カメラを準備しています</strong><p>カメラの使用を許可してください。初回は少し時間がかかります。</p><button id="cancel-camera" class="glass">キャンセル</button></div>
   </section>
   <section class="control-deck">
-    <div class="deck-caption"><span>SCREEN MAGIC</span><strong>きみが投げる。<br>友だちが、カボチャになる。</strong></div>
+    <div class="deck-caption"><span>STEP 02 / THROW</span><strong>できた顔を、投げてみよう。<br>投げ終わったら、展示へ。</strong></div>
     <div class="play-buttons"><button id="play-pair" class="primary">◉ カメラで2人プレイ</button><button id="play-solo" class="secondary">ひとりで練習</button></div>
     <div class="minor-controls"><button id="guide" class="text-button">お手本を見る</button><button id="mouse" class="text-button">マウスで試す</button><button id="customize" class="text-button">かぼちゃを作る ✎</button><button id="stop-camera" class="text-button" hidden>カメラを停止</button></div>
   </section>
-  <footer><div id="flow"><b>01 つかむ</b><i>→</i><span>02 相手に投げる</span><i>→</i><span>03 スポッとかぶる</span></div><div class="craft-flow"><span>形を選ぶ</span><i>✦</i><b>自分の顔を彫る</b><i>✦</i><span>みんなで飾る</span></div><span>カメラ映像はこの端末で処理します</span></footer>
+  <section id="throw-result" class="throw-result" aria-labelledby="throw-result-title" hidden>
+    <div class="result-copy"><span class="eyebrow">STEP 03 / GALLERY</span><h2 id="throw-result-title" tabindex="-1">このかぼちゃを展示する？</h2><p>投げた作品を、みんなの展示室に飾ろう。</p></div>
+    <div class="result-actions"><button id="exhibit-artwork" class="primary">展示室へ進む ↗</button><button id="retry-throw" class="secondary">展示せず、もう一度投げる</button><button id="edit-result" class="text-button">もう少し彫り直す</button></div>
+  </section>
+  <footer><div id="flow"><span>01 彫る</span><i>→</i><b>02 投げる</b><i>→</i><span class="last-step">03 展示する</span></div><div class="craft-flow"><b>01 彫る</b><i>✦</i><span>02 投げる</span><i>✦</i><span>03 展示する</span></div><span>カメラ映像はこの端末で処理します</span></footer>
   <section id="workshop" class="workshop" aria-label="かぼちゃ作り">
     <div class="drawing-tools">
       <div class="workshop-tools-heading"><strong>どんな顔にしよう？</strong><span>道具を選んで、ひと彫りずつ。</span></div>
@@ -41,7 +45,7 @@
       <p id="carving-feedback" role="status">なぞって皮を削る → はなして、同じ場所を重ねて削ると穴が開く</p>
       <div class="tools shape-tools"><span>かぼちゃの形</span><button data-shape="round" aria-pressed="true"><i class="shape-mark" aria-hidden="true"></i>まる</button><button data-shape="tall" aria-pressed="false"><i class="shape-mark" aria-hidden="true"></i>たて長</button><button data-shape="wide" aria-pressed="false"><i class="shape-mark" aria-hidden="true"></i>よこ長</button><button id="undo">↶ 戻す</button><button id="redo">↷ やり直す</button><button id="clear">白紙から作る</button><button id="template">お手本の顔</button><button id="save-artwork">作品ファイルを保存</button></div>
     </div>
-    <div class="workshop-finish"><strong>できたら、みんなの展示室へ。</strong><button id="exhibit-artwork" class="primary">完成した作品を展示する ↗</button><button id="finish-carving" class="secondary">この顔で投げる →</button><span id="draft-status" role="status">制作途中はこの端末に保存します</span></div>
+    <div class="workshop-finish"><strong>できたら、投げてみよう。</strong><button id="finish-carving" class="primary">完成！ かぼちゃを投げる →</button><p class="next-step-note">投げ終わったら、展示するか選べます。</p><span id="draft-status" role="status">制作途中はこの端末に保存します</span></div>
   </section>
   <section id="settings" class="settings" hidden>
     <div class="settings-heading"><h2>スタッフ用の設定</h2><button id="close-settings" aria-label="設定を閉じる">×</button></div>
@@ -59,6 +63,6 @@
     <p class="settings-note">最初は内蔵カメラとPC画面で試せます。外付けカメラがあると、会場で置く位置を調整しやすくなります。</p><button id="understood" class="primary">体験に戻る →</button>
   </dialog>
 </main>
-<script type="module" src="experience.mjs?v=20261020-blank"></script>
+<script type="module" src="experience.mjs?v=20261022-throw-gallery"></script>
 </body>
 </html>

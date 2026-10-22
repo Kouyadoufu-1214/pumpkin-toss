@@ -124,3 +124,27 @@
   .carving .bar{height:44px}.carving .cue{top:12px}.carving .cue h1{font-size:24px}.carving .cue>span{display:block}
 }
 
+/* Finish carving, enjoy the throw, then choose whether to exhibit. */
+.carving .workshop-finish .next-step-note{font-size:10px;line-height:1.7;color:var(--muted);margin:0;text-align:center}
+.throw-complete .control-deck,.throw-complete .screen-bottom{display:none}
+.throw-result{display:flex;align-items:center;justify-content:space-between;gap:24px;margin:12px 18px;padding:22px 28px;background:linear-gradient(115deg,#30202c,#241d2b);border:1px solid #a3755166;border-top:2px solid #ce9860;border-radius:12px}
+.result-copy{min-width:0}.result-copy .eyebrow{margin-bottom:9px;color:var(--orange)}
+.result-copy h2{font-family:"Yu Mincho","Hiragino Mincho ProN",serif;font-size:clamp(20px,2vw,28px);line-height:1.5;letter-spacing:.04em;margin:0}
+.result-copy p{font-size:12px;line-height:1.7;color:#c4b6c9;margin:7px 0 0}
+.result-actions{display:grid;grid-template-columns:auto auto;gap:10px;flex-shrink:0}
+.result-actions .primary,.result-actions .secondary{min-height:48px;font-size:12px;padding:13px 18px}
+.result-actions .text-button{grid-column:1/-1;justify-self:center;min-height:36px;padding:7px 12px}
+.throw-complete #flow b{color:var(--muted)}.throw-complete #flow .last-step{color:var(--orange)}
+@media(max-width:800px){
+  .carving .workshop-finish #finish-carving,.carving .workshop-finish .next-step-note{grid-column:1/-1}
+  .throw-result{flex-direction:column;align-items:stretch;gap:16px;padding:20px;text-align:center}
+  .result-actions{grid-template-columns:1fr 1fr}
+}
+@media(max-width:620px){
+  .throw-result{margin:12px 8px;padding:20px 16px}.result-actions{grid-template-columns:1fr}
+  .result-actions .text-button{min-height:44px}.result-copy p{font-size:11px}
+}
+@media(max-height:550px) and (min-width:621px){
+  .exhibit.throw-complete{height:auto;grid-template-rows:40px 330px auto}
+}
+
