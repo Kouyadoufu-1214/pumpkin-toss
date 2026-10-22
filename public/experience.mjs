@@ -246,7 +246,7 @@ function openCarving() {
   if (source === 'guide') startSample('mouse');
   resetRound(); carving = true; $('exhibit').classList.add('carving'); $('workshop').hidden = false;
   updateCarvingTools();
-  $('stage-note').textContent = '指・マウスでなぞろう。カメラでは親指と人差し指をつまんで動かします';
+  $('stage-note').textContent = 'マウスでなぞろう。カメラでは親指と人差し指をつまんで動かします';
 }
 function finishCarving() {
   art.cancel(); saveDraft();
@@ -398,7 +398,7 @@ function burst(pose, time) {
   c.restore();
 }
 function updateCue() {
-  if (carving) { cue('HALLOWEEN WORKSHOP', '月夜のかぼちゃ工房', source === 'camera' ? '親指と人差し指をつまんで、きみだけの顔を彫ろう。' : '指やマウスでひと彫り。きみだけのジャックオランタンに。'); return; }
+  if (carving) { cue('HALLOWEEN WORKSHOP', '月夜のかぼちゃ工房', source === 'camera' ? '親指と人差し指をつまんで、きみだけの顔を彫ろう。' : 'マウスでひと彫り。きみだけのジャックオランタンに。'); return; }
   if (source === 'guide') return;
   if (phase === 'waiting') cue('GET READY', solo ? '左に映って、手を見せよう' : '2人で、左右の枠に入ろう', solo ? '右のお手本の相手に投げてみよう。' : 'オレンジが投げる人。むらさきがかぶる人。');
   if (phase === 'ready') cue('01 / つかむ', 'カボチャを、つかもう。', source === 'mouse' ? 'カボチャをマウスでつかんで、相手のほうへ。' : '画面のカボチャに手を重ねて、にぎる。つまんでもOK。');
