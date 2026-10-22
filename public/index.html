@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#14131b"><title>Pumpkin Toss — 投げたら、友だちがカボチャに。</title>
-  <link rel="stylesheet" href="experience.css?v=20261022-throw-gallery">
+  <link rel="stylesheet" href="experience.css?v=20261022-startup">
 </head>
 <body>
 <main id="exhibit" class="exhibit carving">
@@ -63,6 +63,16 @@
     <p class="settings-note">最初は内蔵カメラとPC画面で試せます。外付けカメラがあると、会場で置く位置を調整しやすくなります。</p><button id="understood" class="primary">体験に戻る →</button>
   </dialog>
 </main>
-<script type="module" src="experience.mjs?v=20261022-render-recovery"></script>
+<section id="startup-status" class="startup-status" role="status" aria-live="polite" aria-labelledby="startup-title">
+  <div class="startup-card">
+    <span class="startup-star" aria-hidden="true">✷</span>
+    <h2 id="startup-title">かぼちゃ工房を開いています</h2>
+    <p id="startup-detail">準備ができると、ここにかぼちゃが現れます。</p>
+    <div class="startup-actions"><button id="startup-reload" class="secondary">読み込みをやり直す</button><a id="startup-open" class="primary" href="https://kouyadoufu-1214.github.io/pumpkin-toss/">公開サイトを開く ↗</a></div>
+    <details id="startup-diagnostics" hidden><summary>読み込みの詳細</summary><pre id="startup-error"></pre></details>
+    <noscript><p>JavaScriptが無効のため起動できません。JavaScriptが使えるPCのEdgeまたはChromeで、共有URLを開いてください。</p></noscript>
+  </div>
+</section>
+<script src="startup.js?v=20261022-startup"></script>
 </body>
 </html>

@@ -544,4 +544,12 @@ $('fullscreen').onclick = async () => {
 };
 restoreDraft(); openCarving();
 document.addEventListener('visibilitychange', () => { if (document.hidden) { art.cancel(); saveDraft(); } });
-requestAnimationFrame(render);
+requestAnimationFrame(time => {
+  try {
+    render(time);
+    window.dispatchEvent(new Event('pumpkin-ready'));
+  } catch (error) {
+    window.dispatchEvent(new CustomEvent('pumpkin-startup-error', { detail: { error } }));
+    throw error;
+  }
+});
