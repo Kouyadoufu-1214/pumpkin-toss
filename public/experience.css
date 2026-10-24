@@ -170,3 +170,10 @@
 .face-fit-setting label{display:flex;justify-content:space-between;gap:12px}.face-fit-setting output{color:var(--orange)}
 .face-fit-setting input{width:100%;accent-color:var(--orange);margin:10px 0}.face-fit-setting button{font-size:11px;padding:5px 0}
 .face-fit-setting p{font-size:11px;line-height:1.7;color:var(--muted);margin:5px 0 0}
+.bar #share-button{border:1px solid #ffb76b66;color:var(--orange)}
+#share-dialog{width:min(580px,calc(100% - 32px))}
+.share-url-label{display:block;font-size:12px;color:var(--muted);margin-top:20px}
+#share-url{width:100%;padding:13px 12px;margin:8px 0;border:1px solid #88718e;border-radius:8px;background:#15111c;color:var(--paper);font-size:14px}
+#share-status{min-height:1.8em;font-size:12px;color:var(--orange);margin:12px 0}
+#share-open{color:var(--violet);font-size:13px;text-underline-offset:4px}
+#share-dialog .share-hint{font-size:11px;color:var(--muted);margin:18px 0 0}

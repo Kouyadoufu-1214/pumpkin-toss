@@ -92,8 +92,8 @@ test('losing the receiver before the reveal defers it until the face returns', (
   assert.equal(h.focusCalls.length, 1);
 });
 
-test('settings and setup dialogs defer the reveal without losing it or stealing focus', () => {
-  for (const dialog of ['settings', 'setup-dialog']) {
+test('settings, setup and sharing defer the reveal without losing it or stealing focus', () => {
+  for (const dialog of ['settings', 'setup-dialog', 'share-dialog']) {
     const h = resultHarness();
     const panel = h.element(dialog);
     if (dialog === 'settings') panel.hidden = false;

@@ -3,13 +3,18 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#14131b"><title>Pumpkin Toss — 投げたら、友だちがカボチャに。</title>
-  <link rel="stylesheet" href="experience.css?v=20261025-head-cover">
+  <meta name="description" content="自分だけのかぼちゃを彫って、カメラに映る友だちへ投げよう。PCで遊べる文化祭のAR体験。">
+  <meta property="og:type" content="website"><meta property="og:title" content="Pumpkin Toss — 投げたら、友だちがカボチャに。">
+  <meta property="og:description" content="かぼちゃを作る → カメラで投げる → みんなの展示室へ。PCで遊べる文化祭のAR体験。">
+  <meta property="og:url" content="https://kouyadoufu-1214.github.io/pumpkin-toss/">
+  <link rel="canonical" href="https://kouyadoufu-1214.github.io/pumpkin-toss/">
+  <link rel="stylesheet" href="experience.css?v=20261025-share">
 </head>
 <body>
 <main id="exhibit" class="exhibit carving">
   <header class="bar">
     <a class="brand" href="./"><span aria-hidden="true">✷</span> PUMPKIN TOSS</a><span class="edition"><span class="play-edition">文化祭 / 体験プロトタイプ</span><span class="craft-edition">HALLOWEEN / 手づくりの灯り</span></span>
-    <nav><a id="gallery-link" class="gallery-link" target="_blank" rel="noopener">みんなの展示室 ↗</a><button id="setup-button">会場のイメージ</button><button id="settings-button" aria-expanded="false" aria-controls="settings">設定</button><button id="fullscreen">全画面 ↗</button></nav>
+    <nav><button id="share-button" aria-haspopup="dialog" aria-controls="share-dialog">共有 ↗</button><a id="gallery-link" class="gallery-link" target="_blank" rel="noopener">みんなの展示室 ↗</a><button id="setup-button">会場のイメージ</button><button id="settings-button" aria-expanded="false" aria-controls="settings">設定</button><button id="fullscreen">全画面 ↗</button></nav>
   </header>
   <section id="theater" class="theater" aria-label="スクリーン体験">
     <video id="camera-video" muted playsinline hidden></video>
@@ -59,6 +64,17 @@
     <p id="tracking-status" class="technical">カメラは停止中</p>
     <p class="settings-note">カメラ許可後、接続されたUSBカメラを機種名で選べます。グー・パーが反応しにくいときは「映像＋マウスで投げる」で遊べます。映像はそのまま表示し、顔をクリックして位置を指定することもできます。</p>
   </section>
+  <dialog id="share-dialog" aria-labelledby="share-title">
+    <button id="close-share" class="dialog-close" aria-label="共有を閉じる">×</button>
+    <span class="eyebrow">SHARE THE EXPERIENCE</span><h2 id="share-title">みんなに、かぼちゃ体験を。</h2>
+    <p>このURLを送ると、相手も自分のPCでかぼちゃを作って遊べます。GitHubへのログインは不要です。</p>
+    <label class="share-url-label" for="share-url">共有するURL</label>
+    <input id="share-url" type="url" readonly spellcheck="false" value="https://kouyadoufu-1214.github.io/pumpkin-toss/">
+    <button id="copy-share" class="primary">共有リンクをコピー</button>
+    <p id="share-status" role="status" aria-live="polite"></p>
+    <a id="share-open" href="https://kouyadoufu-1214.github.io/pumpkin-toss/" target="_blank" rel="noopener">公開ページを別のタブで開く ↗</a>
+    <p class="share-hint">PCのChrome・Edgeで開き、カメラを許可すると遊べます。</p>
+  </dialog>
   <dialog id="setup-dialog">
     <button id="close-setup" class="dialog-close" aria-label="会場のイメージを閉じる">×</button><span class="eyebrow">会場での見え方</span><h2>大きな「不思議な鏡」を置こう。</h2><p>スクリーンに映った自分たちに、カボチャが重なります。</p>
     <div class="room-plan"><div class="plan-screen">スクリーン / 大きなモニター</div><div class="plan-camera">● カメラ</div><div class="sight-lines"></div><div class="plan-players"><span>① 投げる人</span><span>② かぶる人</span></div></div>
@@ -76,6 +92,6 @@
     <noscript><p>JavaScriptが無効のため起動できません。JavaScriptが使えるPCのEdgeまたはChromeで、共有URLを開いてください。</p></noscript>
   </div>
 </section>
-<script src="startup.js?v=20261025-head-cover"></script>
+<script src="startup.js?v=20261025-share"></script>
 </body>
 </html>

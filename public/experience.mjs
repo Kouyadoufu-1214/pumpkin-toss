@@ -7,6 +7,7 @@ import { outlineInfo } from './carving-path.mjs';
 import { encodeMask, decodeMask, validateArtwork, MAX_GALLERY_MASK_LENGTH } from './artwork-codec.mjs';
 import { GALLERY_URL } from './gallery-config.mjs';
 import { drawWorkshopScene } from './workshop-scene.mjs';
+import { setupShareControls } from './share-link.mjs';
 
 const $ = id => document.getElementById(id);
 const canvas = $('screen'), c = canvas.getContext('2d'), video = $('camera-video');
@@ -71,7 +72,7 @@ function hideThrowResult() {
 function updateThrowResult(time) {
   const result = $('throw-result');
   if (!result.hidden || carving || (loading && source !== 'mouse-camera') || source === 'guide' || phase !== 'worn' || !receiver || time - wornSince < 1200) return;
-  if (!$('settings').hidden || $('setup-dialog').open) return;
+  if (!$('settings').hidden || $('setup-dialog').open || $('share-dialog').open) return;
   dwell.reset(); result.hidden = false; $('exhibit').classList.add('throw-complete');
   $('throw-result-title').focus({ preventScroll: true }); result.scrollIntoView({ block: 'nearest' });
 }
@@ -669,6 +670,7 @@ $('fullscreen').onclick = async () => {
   try { if (document.fullscreenElement) await document.exitFullscreen(); else if ($('exhibit').requestFullscreen) await $('exhibit').requestFullscreen(); else notice('このブラウザーでは全画面表示に対応していません'); }
   catch { notice('全画面にできませんでした。ブラウザーの全画面操作をお試しください。'); }
 };
+setupShareControls();
 restoreDraft(); openCarving();
 document.addEventListener('visibilitychange', () => { if (document.hidden) { art.cancel(); saveDraft(); } });
 requestAnimationFrame(time => {

@@ -8,6 +8,8 @@
 
 共有用のURL: **https://kouyadoufu-1214.github.io/pumpkin-toss/**
 
+画面上部の「共有 ↗」から「共有リンクをコピー」を押し、メッセージなどに貼り付けて送れます。ローカル起動中も、相手が開ける公開URLをコピーします。コピーできないブラウザーでは、表示されたURLを選択して `Ctrl+C` でコピーできます。
+
 GitHubのコード: https://github.com/Kouyadoufu-1214/pumpkin-toss
 
 遊ぶだけならGitHubアカウントは不要です。PCのブラウザーで開いてかぼちゃを作り、完成後は内蔵カメラで「ひとりで練習」を試せます。
