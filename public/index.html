@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#14131b"><title>Pumpkin Toss — 投げたら、友だちがカボチャに。</title>
-  <link rel="stylesheet" href="experience.css?v=20261024-camera">
+  <link rel="stylesheet" href="experience.css?v=20261025-face-fit">
 </head>
 <body>
 <main id="exhibit" class="exhibit carving">
@@ -54,6 +54,7 @@
     <label>自動選択時 <select id="facing"><option value="user">前面 / 内蔵カメラ</option><option value="environment">背面カメラ</option></select></label>
     <button id="switch-camera" class="secondary">このカメラで再開</button>
     <label><input id="mirror" type="checkbox" checked> 鏡のように左右反転する</label><label><input id="sound" type="checkbox"> 効果音を鳴らす</label>
+    <div class="face-fit-setting"><label for="face-fit-scale">顔に合わせるサイズ <output id="face-fit-value" for="face-fit-scale">100%</output></label><input id="face-fit-scale" type="range" min="80" max="130" step="1" value="100" aria-describedby="face-fit-note"><button id="face-fit-reset" class="text-button">100%に戻す</button><p id="face-fit-note">顔の輪郭を測って自動調整します。髪型などで見え方を変えたいときだけ微調整できます。</p></div>
     <button id="swap" class="secondary">投げる側を左右入れ替える</button><button id="assist" class="secondary">スタッフ操作で投げる</button>
     <p id="tracking-status" class="technical">カメラは停止中</p>
     <p class="settings-note">カメラ許可後、接続されたUSBカメラを機種名で選べます。グー・パーが反応しにくいときは「映像＋マウスで投げる」で遊べます。映像はそのまま表示し、顔をクリックして位置を指定することもできます。</p>
@@ -75,6 +76,6 @@
     <noscript><p>JavaScriptが無効のため起動できません。JavaScriptが使えるPCのEdgeまたはChromeで、共有URLを開いてください。</p></noscript>
   </div>
 </section>
-<script src="startup.js?v=20261024-camera"></script>
+<script src="startup.js?v=20261025-face-fit"></script>
 </body>
 </html>

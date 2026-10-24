@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import * as THREE from '../public/vendor/three/three.module.js';
 import { Pumpkin3D, faceQuaternion, blendOrientation, createPumpkinGeometry, projectedCarvingPoint } from '../public/pumpkin-3d.mjs';
 
@@ -106,4 +107,133 @@ test('unexpected renderer exceptions remain observable by the application fallba
   h.pumpkin.renderer.render = () => { throw new Error('GPU unavailable'); };
   assert.throws(h.draw, /GPU unavailable/);
   assert.equal(h.calls.copy, 0);
+});
+
+function fittingHarness(geometry = createPumpkinGeometry(), width = 1280, height = 720) {
+  const camera = new THREE.PerspectiveCamera(40, width / height, 1, 5000);
+  camera.position.z = height / (2 * Math.tan(THREE.MathUtils.degToRad(20)));
+  camera.updateMatrixWorld();
+  return Object.assign(Object.create(Pumpkin3D.prototype), { geometry, width, height, camera, root: new THREE.Group() });
+}
+
+function projectedShellBox(pumpkin, pose, face) {
+  pumpkin.place(pose);
+  const vertices = pumpkin.geometry.attributes.position, point = new THREE.Vector3();
+  const cos = Math.cos(face.roll || 0), sin = Math.sin(face.roll || 0);
+  let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+  // Independently project EVERY vertex through the real place() method. The
+  // production fit only sees a small cached subset of those vertices.
+  for (let i = 0; i < vertices.count; i++) {
+    point.fromBufferAttribute(vertices, i).applyMatrix4(pumpkin.root.matrixWorld).project(pumpkin.camera);
+    const x = (point.x + 1) * pumpkin.width / 2 - face.x, y = (1 - point.y) * pumpkin.height / 2 - face.y;
+    const u = x * cos + y * sin, v = -x * sin + y * cos;
+    left = Math.min(left, u); right = Math.max(right, u); top = Math.min(top, v); bottom = Math.max(bottom, v);
+  }
+  return { w: right - left, h: bottom - top, x: (left + right) / 2, y: (top + bottom) / 2 };
+}
+
+function deliveryShell() {
+  const bytes = readFileSync(new URL('../public/pumpkin-higgsfield.glb', import.meta.url));
+  const jsonLength = bytes.readUInt32LE(12), gltf = JSON.parse(bytes.subarray(20, 20 + jsonLength));
+  const meshIndex = gltf.meshes.findIndex(mesh => mesh.name === 'pumpkin-shell');
+  const accessor = gltf.accessors[gltf.meshes[meshIndex].primitives[0].attributes.POSITION];
+  const view = gltf.bufferViews[accessor.bufferView];
+  assert.equal(accessor.componentType, 5126); assert.equal(view.byteStride, undefined);
+  const begin = 28 + jsonLength + (view.byteOffset || 0) + (accessor.byteOffset || 0);
+  const array = new Float32Array(bytes.buffer.slice(bytes.byteOffset + begin, bytes.byteOffset + begin + accessor.count * 12));
+  const geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(array, 3));
+  const node = gltf.nodes.find(item => item.mesh === meshIndex);
+  assert.ok(!gltf.nodes.some(item => item.children?.includes(gltf.nodes.indexOf(node))), 'delivery shell has no parent transform');
+  const transform = node.matrix ? new THREE.Matrix4().fromArray(node.matrix) : new THREE.Matrix4().compose(
+    new THREE.Vector3().fromArray(node.translation || [0, 0, 0]), new THREE.Quaternion().fromArray(node.rotation || [0, 0, 0, 1]), new THREE.Vector3().fromArray(node.scale || [1, 1, 1]),
+  );
+  return geometry.applyMatrix4(transform);
+}
+
+function assertFaceFit(pumpkin, face, options = {}) {
+  const pose = pumpkin.fitFacePose(face, options); assert.ok(pose);
+  const box = projectedShellBox(pumpkin, pose, face);
+  const scale = options.scale ?? 1;
+  const w = face.w * 1.1 * scale * (options.shape === 'wide' ? 1.22 : 1);
+  const h = face.h * 1.1 * scale * (options.shape === 'tall' ? 1.18 : 1);
+  assert.ok(Math.abs(box.w / w - 1) < .025, `width ${box.w}, expected ${w}`);
+  assert.ok(Math.abs(box.h / h - 1) < .025, `height ${box.h}, expected ${h}`);
+  assert.ok(Math.abs(box.x) < Math.max(1, w * .01), `horizontal center ${box.x}`);
+  assert.ok(Math.abs(box.y) < Math.max(1, h * .01), `vertical center ${box.y}`);
+  return { pose, box };
+}
+
+test('face fit follows distant and nearby faces using the actual shell projection without fixed size clamps', () => {
+  for (const geometry of [createPumpkinGeometry(), deliveryShell()]) {
+    const pumpkin = fittingHarness(geometry);
+    for (const face of [
+      { x: 640, y: 360, w: 20, h: 30 }, { x: 950, y: 300, w: 80, h: 120 },
+      { x: 320, y: 360, w: 240, h: 320 }, { x: 720, y: 360, w: 430, h: 510 },
+    ]) assertFaceFit(pumpkin, face);
+    geometry.dispose();
+  }
+});
+
+test('face fit uses the same roll-free screen basis for yaw, pitch, and sideways heads', () => {
+  const pumpkin = fittingHarness(deliveryShell());
+  for (const [pitch, yaw, rotation, w] of [[0, .8, 0, 100], [.4, .6, .65, 110], [-.5, -.7, -1.1, 90], [0, 1.4, 0, 75], [0, 0, Math.PI / 2, 130]]) {
+    const quaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(pitch, yaw, -rotation, 'YXZ'));
+    const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(quaternion);
+    const face = { x: 870, y: 330, w, h: 180, roll: Math.atan2(axis.x, axis.y), quaternion: quaternion.toArray() };
+    const { pose } = assertFaceFit(pumpkin, face);
+    near(new THREE.Quaternion().fromArray(pose.quaternion).angleTo(quaternion), 0, 1e-6);
+  }
+  pumpkin.geometry.dispose();
+});
+
+test('shape choices preserve face coverage and their canvas fallback has the same visible dimensions', () => {
+  const pumpkin = fittingHarness();
+  const face = { x: 640, y: 360, w: 130, h: 180, roll: .55 };
+  for (const shape of ['round', 'tall', 'wide']) {
+    const { pose, box } = assertFaceFit(pumpkin, face, { shape, scale: 1.15 });
+    assert.ok(box.w > face.w && box.h > face.h);
+    near(pose.fallback.w * .78, face.w * 1.1 * 1.15 * (shape === 'wide' ? 1.22 : 1));
+    near(pose.fallback.h * .8, face.h * 1.1 * 1.15 * (shape === 'tall' ? 1.18 : 1));
+    near(pose.fallback.x, face.x); near(pose.fallback.y, face.y); near(pose.fallback.roll, face.roll);
+  }
+  pumpkin.geometry.dispose();
+});
+
+test('fitting does not move the render root and refreshes cached support points after asset replacement', () => {
+  const pumpkin = fittingHarness();
+  pumpkin.root.position.set(10, 20, 30); pumpkin.root.scale.set(2, 3, 4);
+  const face = { x: 640, y: 360, w: 130, h: 180 };
+  const original = pumpkin.geometry, positions = original.attributes.position;
+  let reads = 0; const getX = positions.getX.bind(positions);
+  positions.getX = index => { reads++; return getX(index); };
+  const initial = pumpkin.fitFacePose(face);
+  assert.ok(reads > positions.count);
+  reads = 0; pumpkin.fitFacePose(face);
+  assert.equal(reads, 0, 'steady-state fitting uses cached shell points');
+  assert.deepEqual(pumpkin.root.position.toArray(), [10, 20, 30]);
+  assert.deepEqual(pumpkin.root.scale.toArray(), [2, 3, 4]);
+  pumpkin.geometry = deliveryShell();
+  const replacement = assertFaceFit(pumpkin, face).pose;
+  assert.notEqual(initial.h, replacement.h);
+  original.dispose(); pumpkin.geometry.dispose();
+});
+
+test('degenerate side-on fits stay finite and invalid measurements do not reach rendering', () => {
+  const pumpkin = fittingHarness();
+  for (const quaternion of [
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)).toArray(),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)).toArray(),
+  ]) {
+    const face = { x: 640, y: 360, w: 250, h: 120, quaternion };
+    const pose = pumpkin.fitFacePose(face);
+    assert.ok(pose && [pose.x, pose.y, pose.w, pose.h].every(Number.isFinite));
+    assert.ok(pose.w > 0 && pose.w < 2000 && pose.h > 0 && pose.h < 2000);
+    const box = projectedShellBox(pumpkin, pose, face);
+    assert.ok(box.w >= face.w && box.h >= face.h);
+  }
+  for (const face of [null, { x: 1, y: 1, w: 0, h: 2 }, { x: NaN, y: 1, w: 20, h: 30 }, { x: 1, y: 1, w: 20, h: Infinity }]) {
+    assert.equal(pumpkin.fitFacePose(face), null);
+  }
+  assertFaceFit(pumpkin, { x: 640, y: 360, w: 130, h: 180, roll: .5, quaternion: [NaN, 0, 0, 1] });
+  pumpkin.geometry.dispose();
 });

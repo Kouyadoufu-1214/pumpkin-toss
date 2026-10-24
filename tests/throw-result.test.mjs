@@ -32,7 +32,7 @@ function resultHarness(overrides = {}) {
     $: element, document,
     source: 'mouse', phase: 'worn', carving: false, loading: false,
     wornSince: 1000, receiver: { x: 900, y: 280 },
-    heldPose: {}, flight: {}, smoothTarget: {}, controlHand: {},
+    heldPose: {}, flight: {}, smoothTarget: {}, mouseTrackedFace: {}, controlHand: {},
     gripped: true, pinched: true, pointer: 1, roleSince: 500,
     dwell: { reset() { calls.dwell++; } },
     toss: { cancel() { calls.toss++; } },
@@ -132,7 +132,7 @@ test('reset hides the result and clears the round, then a later completed throw 
     assert.equal(h.element('restart').hidden, true);
     assert.equal(h.context.phase, source === 'camera' ? 'waiting' : 'ready');
     assert.equal(h.document.activeElement, h.element('cue-title'));
-    for (const key of ['heldPose', 'flight', 'smoothTarget', 'controlHand', 'pointer']) assert.equal(h.context[key], null, key);
+    for (const key of ['heldPose', 'flight', 'smoothTarget', 'mouseTrackedFace', 'controlHand', 'pointer']) assert.equal(h.context[key], null, key);
     assert.equal(h.context.gripped, false);
     assert.equal(h.context.pinched, false);
     assert.equal(h.context.roleSince, 0);

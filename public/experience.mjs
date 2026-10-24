@@ -1,6 +1,7 @@
 import { clamp, distance, isPinched } from './interaction.mjs';
 import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose } from './exhibit-logic.mjs?v=20261024-camera';
-import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs?v=20261022-render-recovery';
+import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs?v=20261025-face-fit';
+import { measureFace, fallbackFacePose, manualFaceTarget, smoothFacePose } from './face-fit.mjs';
 import { PumpkinArt } from './pumpkin-art.mjs?v=20261020-blank';
 import { outlineInfo } from './carving-path.mjs';
 import { encodeMask, decodeMask, validateArtwork, MAX_GALLERY_MASK_LENGTH } from './artwork-codec.mjs';
@@ -18,7 +19,9 @@ let guideStart = performance.now(), heldPose = null, flight = null, wornSince = 
 let caster = null, receiver = null, controlHand = null, gripped = false, pinched = false;
 let lastResult = 0, faces = [], hands = [], smoothTarget = null, pointer = null, messageTimer, lastCue = '';
 let session = 0, stream = null, worker = null, workerReady = false, processing = false, lastFrame = 0, lastVideoTime = -1, loading = false, initTimer, requestReject;
-let manualTarget = null, handSeenAt = 0, trackingInfo = {}, lastTrackingText = '', frameFailures = 0;
+let manualTarget = null, mouseTrackedFace = null, handSeenAt = 0, trackingInfo = {}, lastTrackingText = '', frameFailures = 0;
+let renderTime = 0;
+const facePoseCache = new WeakMap();
 const cameraActive = () => source === 'camera' || source === 'mouse-camera';
 const mouseControl = () => source === 'mouse' || source === 'mouse-camera';
 let audioContext;
@@ -74,7 +77,7 @@ function updateThrowResult(time) {
 }
 function resetRound() {
   hideThrowResult();
-  phase = source === 'camera' ? 'waiting' : 'ready'; toss.cancel(); heldPose = flight = smoothTarget = null;
+  phase = source === 'camera' ? 'waiting' : 'ready'; toss.cancel(); heldPose = flight = smoothTarget = mouseTrackedFace = null;
   controlHand = null; gripped = pinched = false; dwell.reset(); art.cancel(); pointer = null; roleSince = 0;
   $('restart').hidden = true;
 }
@@ -95,6 +98,15 @@ function restPose(time = performance.now()) {
 }
 function targetPose(face) {
   if (!face) return null;
+  if (!face.sample) {
+    const scale = (Number($('face-fit-scale').value) || 100) / 100;
+    const cached = facePoseCache.get(face);
+    if (cached && cached.scale === scale && cached.shape === shape && cached.geometry === pumpkin?.geometry) return cached.pose;
+    const options = { scale, shape };
+    const pose = pumpkin?.fitFacePose(face, options) || fallbackFacePose(face, options);
+    facePoseCache.set(face, { scale, shape, geometry: pumpkin?.geometry, pose });
+    return pose;
+  }
   const [sx, sy] = shapeScale();
   return { x: face.x, y: face.y - face.h * .05, w: clamp(face.w * 2.35, 150, 400) * sx, h: clamp(face.h * 1.55, 170, 440) * sy, quaternion: face.quaternion, manual: !!face.manual, yaw: face.sample ? Math.sin(performance.now() / 1100) * .12 : 0 };
 }
@@ -125,8 +137,17 @@ function startSample(mode) {
 
 function mouseCameraRoles() {
   caster = sampleRoles().caster;
-  const detected = [...faces].sort((a, b) => swapped ? a.x - b.x : b.x - a.x)[0];
-  const trackingLost = (phase === 'flying' || phase === 'worn') && flight && !flight.target.manual;
+  const trackingThrow = (phase === 'flying' || phase === 'worn') && flight && !manualTarget;
+  const previous = trackingThrow && mouseTrackedFace;
+  // Detector array order and left/right extremes are not person identities.
+  // Keep the last destination through a missed detection instead of attaching
+  // the pumpkin to the other participant who is still visible.
+  const reach = previous ? Math.max(120, Math.min(W * .3, previous.h * 1.2)) : 0;
+  const detected = previous
+    ? faces.filter(face => distance(face, previous) <= reach).sort((a, b) => distance(a, previous) - distance(b, previous))[0]
+    : [...faces].sort((a, b) => swapped ? a.x - b.x : b.x - a.x)[0];
+  if (detected && !manualTarget) mouseTrackedFace = detected;
+  const trackingLost = trackingThrow && (mouseTrackedFace || !flight.target.manual);
   receiver = manualTarget || detected || (trackingLost ? null : { ...sampleRoles().receiver, sample: false, manual: true });
 }
 function updateCameraLabels() {
@@ -137,8 +158,8 @@ function updateCameraLabels() {
 }
 function updateTrackingStatus(elapsed = 0) {
   const engine = trackingInfo.handEngine === 'gesture-recognizer' ? 'グー・パー認識' : trackingInfo.handEngine === 'hand-landmarker' ? '指の位置で認識' : '手の認識なし';
-  const status = phase === 'worn' ? '投球完了 · カメラ映像はそのまま表示中' : source === 'mouse-camera'
-    ? manualTarget ? '位置を指定中 · マウスで投げられます' : faces.length ? '顔を追従中 · マウスで投げられます' : '顔をクリックして位置を指定できます'
+  const status = phase === 'worn' ? receiver?.measured && !receiver.manual ? '顔の大きさに自動フィット · 距離と傾きに追従中' : '投球完了 · カメラ映像はそのまま表示中' : source === 'mouse-camera'
+    ? manualTarget ? '位置を指定中 · マウスで投げられます' : faces.length ? '顔サイズを計測中 · マウスで投げられます' : '顔をクリックして位置を指定できます'
     : `顔 ${faces.length}人 · 手 ${hands.length}本 · ${phase === 'held' ? 'つかんだ！ 相手へ動かしてパー' : controlHand ? gripped ? 'グーを認識' : 'パー・手を認識' : '手をカメラに見せよう'}`;
   if (status !== lastTrackingText) { $('live-status').textContent = status; lastTrackingText = status; }
   $('tracking-status').textContent = `${engine} / 顔 ${faces.length}人 / 手 ${hands.length}本 / 検出 ${elapsed ? Math.round(1000 / elapsed) : '—'}回/秒`;
@@ -158,7 +179,7 @@ function stopCamera(keepStream = false) {
   worker?.terminate(); worker = null; workerReady = processing = loading = false;
   if (!keepStream) { stream?.getTracks().forEach(track => track.stop()); stream = null; video.srcObject = null; }
   faces = []; hands = []; lastResult = 0; caster = receiver = null; cancelHold();
-  handSeenAt = 0; trackingInfo = {}; manualTarget = null; lastTrackingText = ''; frameFailures = 0;
+  handSeenAt = 0; trackingInfo = {}; manualTarget = mouseTrackedFace = null; lastTrackingText = ''; frameFailures = 0;
   $('loading').hidden = true; $('stop-camera').hidden = true;
   $('loading').classList.remove('camera-live');
   $('live-status').hidden = true; $('target-auto').hidden = true;
@@ -272,10 +293,7 @@ async function requestFrame(time) {
 function acceptTracking(data) {
   const now = performance.now(), time = data.time ?? now, elapsed = lastResult ? now - lastResult : 0; lastResult = now;
   trackingInfo = { ...trackingInfo, ...data };
-  faces = data.faces.map((points, index) => {
-    const a = screenPoint(points[234]), b = screenPoint(points[454]), top = screenPoint(points[10]), bottom = screenPoint(points[152]);
-    return { x: (a.x + b.x) / 2, y: (top.y + bottom.y) / 2, w: distance(a, b), h: distance(top, bottom), quaternion: faceQuaternion(data.matrices?.[index], $('mirror').checked) };
-  });
+  faces = data.faces.map((points, index) => measureFace(points, screenPoint, faceQuaternion(data.matrices?.[index], $('mirror').checked))).filter(Boolean);
   if (source === 'mouse-camera') { mouseCameraRoles(); updateTrackingStatus(elapsed); return; }
   const roles = resolveRoles(faces, roleOptions()); caster = roles.caster; receiver = solo ? sampleFace('right') : roles.receiver;
   hands = data.hands.map((points, index) => {
@@ -378,7 +396,7 @@ canvas.addEventListener('pointerdown', event => {
   if (source === 'guide') return;
   if (phase === 'worn' && distance(point, { x: 640, y: 625 }) < 70) { resetRound(); return; }
   if (source === 'mouse-camera' && phase === 'ready' && distance(point, restPose()) > 140) {
-    manualTarget = { x: clamp(point.x, 80, W - 80), y: clamp(point.y, 100, H - 100), w: 110, h: 145, manual: true };
+    manualTarget = manualFaceTarget({ x: clamp(point.x, 80, W - 80), y: clamp(point.y, 100, H - 100) }, faces, receiver);
     mouseCameraRoles(); updateCameraLabels(); updateTrackingStatus(); return;
   }
   if (phase !== 'ready' || distance(point, restPose()) > 140) return;
@@ -481,6 +499,7 @@ function drawPumpkin(pose) {
   const status = pumpkin3DVisible ? '3D PUMPKIN' : '簡易表示';
   if ($('renderer-status').textContent !== status) $('renderer-status').textContent = status;
   if (pumpkin3DVisible) return;
+  pose = pose.fallback || pose;
   c.save(); c.translate(pose.x, pose.y); c.rotate(pose.roll || 0);
   c.fillStyle = '#dc7320'; c.beginPath(); c.ellipse(0, 0, pose.w * .39, pose.h * .4, 0, 0, Math.PI * 2); c.fill();
   line([{ x: -2, y: -pose.h * .39 }, { x: 8, y: -pose.h * .5 }], '#60744b', 15);
@@ -513,10 +532,11 @@ function updateCue() {
   if (phase === 'ready') cue('01 / つかむ', 'カボチャを、つかもう。', mouseControl() ? 'カボチャをマウスでつかんで、相手のほうへ。' : 'かぼちゃの近くでグー。つまんでもOK。手の丸印を重ねよう。');
   if (phase === 'held') cue('02 / 投げる', '相手へ振って、パッとはなす！', mouseControl() ? '少し大きく動かして、マウスをはなそう。' : '相手の方向へ手を動かしながら、パーにしよう。');
   if (phase === 'flying') cue('02 / 投げる', 'いっけー！', 'カボチャが、相手の頭へ。');
-  if (phase === 'worn') cue('03 / かぶる', receiver ? 'スポッ！ お似合い！' : 'かぶる人は、同じ側へ戻ってね', receiver ? receiver.manual ? '指定した位置にかぶせました。もう一度投げたり、展示したりできます。' : '顔を動かすと、カボチャもついてくる。' : '顔が映ったら、カボチャが戻ります。');
+  if (phase === 'worn') cue('03 / かぶる', receiver ? 'スポッ！ お似合い！' : 'かぶる人は、同じ側へ戻ってね', receiver ? receiver.manual ? '指定した位置にかぶせました。もう一度投げたり、展示したりできます。' : '顔の大きさにぴったり。近づいても、傾けてもついてくる。' : '顔が映ったら、カボチャが戻ります。');
 }
 
 function render(time) {
+  const elapsed = renderTime ? time - renderTime : 1000 / 60; renderTime = time;
   requestAnimationFrame(render); background(time);
   if (cameraActive()) {
     drawCamera(); requestFrame(time);
@@ -555,10 +575,10 @@ function render(time) {
   } else {
     if (source === 'mouse') { person(caster, true, time, phase === 'held' ? heldPose : null); person(receiver, false, time); }
     if (source === 'camera' && phase === 'waiting') zones();
-    if (source === 'mouse-camera' && receiver && (phase === 'ready' || phase === 'held')) {
-      c.save(); c.setLineDash([7, 8]); c.lineWidth = 2;
-      circle(receiver.x, receiver.y, 90, '#beafff0a', colors.violet); c.restore();
-      text(receiver.manual ? 'ここにかぶせる · 顔をクリックで変更' : 'この顔にかぶせる', receiver.x, receiver.y + 112, 14, colors.violet, 700);
+    if (cameraActive() && receiver && !receiver.sample && (phase === 'ready' || phase === 'held')) {
+      c.save(); c.setLineDash([7, 8]); c.lineWidth = 2; c.strokeStyle = colors.violet;
+      c.beginPath(); c.ellipse(receiver.x, receiver.y, receiver.w * .55, receiver.h * .55, receiver.roll || 0, 0, Math.PI * 2); c.stroke(); c.restore();
+      text(receiver.manual ? 'ここにかぶせる · 位置固定' : '顔サイズに自動フィット', receiver.x, receiver.y + receiver.h * .6 + 22, 14, colors.violet, 700);
     }
     if (phase === 'ready' || phase === 'held') pose = phase === 'held' ? heldPose : restPose(time);
     if (phase === 'flying' && flight) {
@@ -571,9 +591,7 @@ function render(time) {
     if (phase === 'worn') {
       const target = currentTarget();
       if (target) {
-        if (!smoothTarget) smoothTarget = { ...target };
-        for (const key of ['x', 'y', 'w', 'h']) smoothTarget[key] += (target[key] - smoothTarget[key]) * .25;
-        smoothTarget.quaternion = blendOrientation(smoothTarget.quaternion, target.quaternion, .25); smoothTarget.yaw = target.yaw;
+        smoothTarget = smoothFacePose(smoothTarget, target, elapsed, blendOrientation);
         pose = smoothTarget; burst(pose, time);
       } else { pose = null; smoothTarget = null; }
       updateThrowResult(time);
@@ -599,7 +617,9 @@ $('play-solo').onclick = () => { if (carving) finishCarving(); startCamera(true)
 $('guide').onclick = () => { if (carving) finishCarving(); startSample('guide'); };
 $('mouse').onclick = () => { if (carving) finishCarving(); startCamera(false, 'mouse'); };
 $('mouse-sample').onclick = () => { if (carving) finishCarving(); startSample('mouse'); };
-$('target-auto').onclick = () => { manualTarget = null; mouseCameraRoles(); updateCameraLabels(); updateTrackingStatus(); };
+$('target-auto').onclick = () => { manualTarget = mouseTrackedFace = null; mouseCameraRoles(); updateCameraLabels(); updateTrackingStatus(); };
+$('face-fit-scale').oninput = () => { $('face-fit-value').textContent = `${$('face-fit-scale').value}%`; };
+$('face-fit-reset').onclick = () => { $('face-fit-scale').value = '100'; $('face-fit-value').textContent = '100%'; };
 $('stop-camera').onclick = $('cancel-camera').onclick = () => { if (carving) finishCarving(); startSample('mouse'); };
 $('restart').onclick = resetRound;
 $('retry-throw').onclick = () => { resetRound(); updateCue(); $('theater').scrollIntoView({ block: 'start' }); };

@@ -1,6 +1,7 @@
 import * as THREE from './vendor/three/three.module.js';
 import { GLTFLoader } from './vendor/three/GLTFLoader.js';
 import { createFrontDepth, createCutWalls, createInnerShell } from './carving-walls.mjs';
+import { faceCoverSize, fallbackFacePose } from './face-fit.mjs';
 
 export function faceQuaternion(matrix, mirrored = true) {
   const values = matrix?.data;
@@ -35,6 +36,113 @@ export function createPumpkinGeometry() {
 
 export function projectedCarvingPoint(point) {
   return { x: (.5 + point.x / 2.45) * 512, y: (.56 - point.y / 2.35) * 512 };
+}
+
+const fitSamples = new WeakMap();
+
+function shellFitSamples(geometry) {
+  if (fitSamples.has(geometry)) return fitSamples.get(geometry);
+  const vertices = geometry?.attributes?.position;
+  if (!vertices?.count) return null;
+  // Cache the shell's support vertices in 266 directions, rather than scanning
+  // every mesh vertex on every tracking result. Stems/leaves never enter this.
+  const selected = new Set();
+  for (let latitude = 0; latitude <= 12; latitude++) {
+    const angle = latitude * Math.PI / 12, rings = latitude === 0 || latitude === 12 ? 1 : 24;
+    for (let longitude = 0; longitude < rings; longitude++) {
+      const azimuth = longitude * Math.PI * 2 / rings;
+      const dx = Math.sin(angle) * Math.cos(azimuth), dy = Math.cos(angle), dz = Math.sin(angle) * Math.sin(azimuth);
+      let best = -Infinity, index = 0;
+      for (let i = 0; i < vertices.count; i++) {
+        const dot = vertices.getX(i) * dx + vertices.getY(i) * dy + vertices.getZ(i) * dz;
+        if (dot > best) { best = dot; index = i; }
+      }
+      selected.add(index);
+    }
+  }
+  const points = Array.from(selected, i => [vertices.getX(i), vertices.getY(i), vertices.getZ(i)]);
+  const extent = axis => Math.max(...points.map(point => point[axis])) - Math.min(...points.map(point => point[axis]));
+  const result = { points, w: extent(0), h: extent(1) };
+  fitSamples.set(geometry, result);
+  return result;
+}
+
+function fittedFacePose(pumpkin, face, options) {
+  if (!face || !['x', 'y', 'w', 'h'].every(key => Number.isFinite(face[key])) || face.w <= 0 || face.h <= 0) return null;
+  const samples = shellFitSamples(pumpkin.geometry);
+  if (!samples || samples.w <= 0 || samples.h <= 0) return null;
+  const cover = faceCoverSize(face, options), roll = Number.isFinite(face.roll) ? face.roll : 0;
+  const cos = Math.cos(roll), sin = Math.sin(roll);
+  const quaternion = new THREE.Quaternion();
+  if (face.quaternion?.length === 4 && Array.from(face.quaternion).every(Number.isFinite) && Math.hypot(...face.quaternion) > .0001) {
+    quaternion.fromArray(face.quaternion).normalize();
+  } else quaternion.setFromEuler(new THREE.Euler(0, 0, -roll));
+  const pose = {
+    x: face.x, y: face.y, w: cover.w / (samples.w * .37), h: cover.h / (samples.h * .43),
+    quaternion: quaternion.toArray(), roll, manual: !!face.manual, fallback: fallbackFacePose({ ...face, roll }, options),
+  };
+  const camera = pumpkin.camera;
+  const projection = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  const matrix = new THREE.Matrix4(), position = new THREE.Vector3(), size = new THREE.Vector3();
+  const bounds = (w = pose.w, h = pose.h) => {
+    position.set(pose.x - pumpkin.width / 2, pumpkin.height / 2 - pose.y, 0);
+    size.set(w * .37, h * .43, Math.min(w, h) * .34);
+    matrix.compose(position, quaternion, size).premultiply(projection);
+    const e = matrix.elements;
+    let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+    for (const [x, y, z] of samples.points) {
+      const denominator = e[3] * x + e[7] * y + e[11] * z + e[15];
+      if (denominator <= camera.near) return null;
+      const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / denominator + 1) * pumpkin.width / 2 - face.x;
+      const sy = (1 - (e[1] * x + e[5] * y + e[9] * z + e[13]) / denominator) * pumpkin.height / 2 - face.y;
+      const u = sx * cos + sy * sin, v = -sx * sin + sy * cos;
+      left = Math.min(left, u); right = Math.max(right, u); top = Math.min(top, v); bottom = Math.max(bottom, v);
+    }
+    return { w: right - left, h: bottom - top, x: (left + right) / 2, y: (top + bottom) / 2 };
+  };
+  const error = box => box ? Math.hypot(Math.log(box.w / cover.w), Math.log(box.h / cover.h)) : Infinity;
+  const center = box => {
+    pose.x -= box.x * cos - box.y * sin;
+    pose.y -= box.x * sin + box.y * cos;
+  };
+  const limit = value => Math.max(-.45, Math.min(.45, value));
+  for (let iteration = 0; iteration < 6; iteration++) {
+    let box = bounds();
+    if (!box || !Number.isFinite(error(box))) return null;
+    center(box); box = bounds();
+    if (!box) return null;
+    if (error(box) < .002) break;
+    // Width and height are coupled by yaw/pitch and place()'s depth scale.
+    // A bounded Newton step handles that coupling without cos(yaw) guesses.
+    const dw = bounds(pose.w * 1.02, pose.h), dh = bounds(pose.w, pose.h * 1.02);
+    if (!dw || !dh) break;
+    const step = Math.log(1.02);
+    const a = Math.log(dw.w / box.w) / step, b = Math.log(dh.w / box.w) / step;
+    const c = Math.log(dw.h / box.h) / step, d = Math.log(dh.h / box.h) / step;
+    const rw = Math.log(cover.w / box.w), rh = Math.log(cover.h / box.h), determinant = a * d - b * c;
+    if (!Number.isFinite(determinant) || Math.abs(determinant) < .025) break;
+    const sw = limit((rw * d - rh * b) / determinant), sh = limit((rh * a - rw * c) / determinant);
+    let accepted = false;
+    for (const fraction of [1, .5, .25]) {
+      const w = pose.w * Math.exp(sw * fraction), h = pose.h * Math.exp(sh * fraction);
+      if (error(bounds(w, h)) < error(box)) { pose.w = w; pose.h = h; accepted = true; break; }
+    }
+    if (!accepted) break;
+  }
+  // At an exactly side-on pose the two dimensions can become dependent.
+  // Prefer covering the face with a finite uniform scale to unstable stretching.
+  for (let iteration = 0; iteration < 3; iteration++) {
+    const box = bounds();
+    if (!box) return null;
+    center(box);
+    const factor = Math.max(1, cover.w / box.w, cover.h / box.h);
+    if (factor > 1.002) {
+      const next = Math.min(factor, 1.25);
+      if (!bounds(pose.w * next, pose.h * next)) break;
+      pose.w *= next; pose.h *= next;
+    }
+  }
+  return pose;
 }
 
 function shellMaterial(mask, { inner = false, source = null } = {}) {
@@ -147,6 +255,10 @@ export class Pumpkin3D {
   }
 
   updateMask() { this.mask.needsUpdate = true; this.wallsDirty = true; }
+
+  // face.w/h are measured in screen pixels after undoing face.roll. Fit in
+  // that same basis: a turned face is never narrowed a second time by the 3D pose.
+  fitFacePose(face, options = {}) { return fittedFacePose(this, face, options); }
 
   place(pose) {
     const depth = pose.depth ?? 1;

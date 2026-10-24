@@ -165,3 +165,8 @@
 .loading.camera-live .spinner{display:none}
 .loading.camera-live button{pointer-events:auto}
 .settings select{max-width:190px}
+.settings{max-height:calc(100dvh - 90px);overflow-y:auto}
+.face-fit-setting{border-block:1px solid var(--line);padding:12px 0;margin:14px 0}
+.face-fit-setting label{display:flex;justify-content:space-between;gap:12px}.face-fit-setting output{color:var(--orange)}
+.face-fit-setting input{width:100%;accent-color:var(--orange);margin:10px 0}.face-fit-setting button{font-size:11px;padding:5px 0}
+.face-fit-setting p{font-size:11px;line-height:1.7;color:var(--muted);margin:5px 0 0}

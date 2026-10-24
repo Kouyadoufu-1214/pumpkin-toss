@@ -15,20 +15,20 @@ const pose = { x: 640, y: 422, w: 530, h: 480 };
 // display and carving functions, so a fallback must affect both consistently.
 function recoveryHarness({ draw = () => true, cleanupFails = false } = {}) {
   const calls = { draw: 0, mask: 0, fallback: 0, raycast: 0, dispose: 0, warn: 0 };
-  const status = { textContent: '3D PUMPKIN' }, maskCanvas = {}, strokes = [], copiedImages = [];
+  const status = { textContent: '3D PUMPKIN' }, maskCanvas = {}, strokes = [], copiedImages = [], translations = [], rotations = [], ellipses = [], renderPoses = [];
   const art = {
     canvas: maskCanvas, changed: true, options: { mode: 'scrape' },
     stroke(hit) { strokes.push(hit); return true; },
   };
   const renderer = {
-    draw() { calls.draw++; return draw(); },
+    draw(context, target) { calls.draw++; renderPoses.push(target); return draw(); },
     updateMask() { calls.mask++; },
     dispose() { calls.dispose++; if (cleanupFails) throw new Error('cleanup failed'); },
     hit() { calls.raycast++; return { x: 123, y: 456 }; },
   };
   const c = {
-    save() {}, restore() {}, translate() {}, rotate() {}, beginPath() {}, fill() {},
-    ellipse() { calls.fallback++; },
+    save() {}, restore() {}, translate(...args) { translations.push(args); }, rotate(angle) { rotations.push(angle); }, beginPath() {}, fill() {},
+    ellipse(...args) { calls.fallback++; ellipses.push(args); },
     drawImage(image) { copiedImages.push(image); },
   };
   const context = vm.createContext({
@@ -39,11 +39,23 @@ function recoveryHarness({ draw = () => true, cleanupFails = false } = {}) {
   vm.runInContext(productionSection('function drawPumpkin(', 'function handCursor('), context);
   vm.runInContext(productionSection('const carvingPose =', 'function carvingFeedback('), context);
   return {
-    context, calls, status, art, maskCanvas, strokes, copiedImages, renderer,
-    draw: () => context.drawPumpkin(pose),
+    context, calls, status, art, maskCanvas, strokes, copiedImages, renderer, translations, rotations, ellipses, renderPoses,
+    draw: (target = pose) => context.drawPumpkin(target),
     carve: point => context.carveAt(point),
   };
 }
+
+test('a fitted 3D pumpkin uses its separate measured 2D pose when the renderer is unavailable', () => {
+  const h = recoveryHarness({ draw: () => false });
+  const target = { x: 500, y: 300, w: 360, h: 380, fallback: { x: 510, y: 305, w: 220, h: 260, roll: .4 } };
+  h.draw(target);
+  assert.equal(h.renderPoses[0], target, 'the 3D renderer receives its own fit');
+  assert.deepEqual(h.translations[0], [510, 305]);
+  assert.equal(h.rotations[0], .4);
+  assert.equal(h.ellipses[0][2], 220 * .39);
+  assert.equal(h.ellipses[0][3], 260 * .4);
+  assert.equal(h.copiedImages[0], h.maskCanvas);
+});
 
 test('a false 3D draw shows the same artwork in 2D and returns to 3D after recovery', () => {
   let healthy = true;
