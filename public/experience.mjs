@@ -1,5 +1,5 @@
 import { clamp, distance, isPinched } from './interaction.mjs';
-import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose } from './exhibit-logic.mjs';
+import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose } from './exhibit-logic.mjs?v=20261024-camera';
 import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs?v=20261022-render-recovery';
 import { PumpkinArt } from './pumpkin-art.mjs?v=20261020-blank';
 import { outlineInfo } from './carving-path.mjs';
@@ -18,6 +18,9 @@ let guideStart = performance.now(), heldPose = null, flight = null, wornSince = 
 let caster = null, receiver = null, controlHand = null, gripped = false, pinched = false;
 let lastResult = 0, faces = [], hands = [], smoothTarget = null, pointer = null, messageTimer, lastCue = '';
 let session = 0, stream = null, worker = null, workerReady = false, processing = false, lastFrame = 0, lastVideoTime = -1, loading = false, initTimer, requestReject;
+let manualTarget = null, handSeenAt = 0, trackingInfo = {}, lastTrackingText = '', frameFailures = 0;
+const cameraActive = () => source === 'camera' || source === 'mouse-camera';
+const mouseControl = () => source === 'mouse' || source === 'mouse-camera';
 let audioContext;
 const DRAFT_KEY = 'pumpkin-toss-artwork-v1';
 let draftTimer;
@@ -64,7 +67,7 @@ function hideThrowResult() {
 }
 function updateThrowResult(time) {
   const result = $('throw-result');
-  if (!result.hidden || carving || loading || source === 'guide' || phase !== 'worn' || !receiver || time - wornSince < 1200) return;
+  if (!result.hidden || carving || (loading && source !== 'mouse-camera') || source === 'guide' || phase !== 'worn' || !receiver || time - wornSince < 1200) return;
   if (!$('settings').hidden || $('setup-dialog').open) return;
   dwell.reset(); result.hidden = false; $('exhibit').classList.add('throw-complete');
   $('throw-result-title').focus({ preventScroll: true }); result.scrollIntoView({ block: 'nearest' });
@@ -93,7 +96,7 @@ function restPose(time = performance.now()) {
 function targetPose(face) {
   if (!face) return null;
   const [sx, sy] = shapeScale();
-  return { x: face.x, y: face.y - face.h * .05, w: clamp(face.w * 2.35, 150, 400) * sx, h: clamp(face.h * 1.55, 170, 440) * sy, quaternion: face.quaternion, yaw: face.sample ? Math.sin(performance.now() / 1100) * .12 : 0 };
+  return { x: face.x, y: face.y - face.h * .05, w: clamp(face.w * 2.35, 150, 400) * sx, h: clamp(face.h * 1.55, 170, 440) * sy, quaternion: face.quaternion, manual: !!face.manual, yaw: face.sample ? Math.sin(performance.now() / 1100) * .12 : 0 };
 }
 function currentTarget() { return targetPose(receiver); }
 function launch(from, target) {
@@ -117,6 +120,28 @@ function startSample(mode) {
   stopCamera(); source = mode; solo = false; guideStart = performance.now(); resetRound();
   $('source-badge').textContent = mode === 'guide' ? '● お手本 / 自動で再生' : '● マウスで体験';
   $('stage-note').textContent = mode === 'guide' ? 'この2人はお手本です。カメラの映像ではありません。' : 'カボチャをドラッグして、相手の方向へはなす';
+  $('live-status').hidden = true; $('target-auto').hidden = true;
+}
+
+function mouseCameraRoles() {
+  caster = sampleRoles().caster;
+  const detected = [...faces].sort((a, b) => swapped ? a.x - b.x : b.x - a.x)[0];
+  const trackingLost = (phase === 'flying' || phase === 'worn') && flight && !flight.target.manual;
+  receiver = manualTarget || detected || (trackingLost ? null : { ...sampleRoles().receiver, sample: false, manual: true });
+}
+function updateCameraLabels() {
+  $('source-badge').textContent = source === 'mouse-camera' ? '● LIVE / マウスで投げる' : solo ? '● LIVE / 手で投げる・ひとり練習' : '● LIVE / 手で投げる・2人プレイ';
+  $('stage-note').textContent = source === 'mouse-camera' ? 'かぼちゃをドラッグして投げる。顔をクリックすると、かぶせる位置を指定できます。' : solo ? '左でグー → 相手へ動かしてパー。つまんで、はなしてもOK。' : '左右に立ち、かぼちゃの近くでグー → 相手へ動かしてパー。';
+  $('live-status').hidden = false;
+  $('target-auto').hidden = source !== 'mouse-camera' || !manualTarget;
+}
+function updateTrackingStatus(elapsed = 0) {
+  const engine = trackingInfo.handEngine === 'gesture-recognizer' ? 'グー・パー認識' : trackingInfo.handEngine === 'hand-landmarker' ? '指の位置で認識' : '手の認識なし';
+  const status = phase === 'worn' ? '投球完了 · カメラ映像はそのまま表示中' : source === 'mouse-camera'
+    ? manualTarget ? '位置を指定中 · マウスで投げられます' : faces.length ? '顔を追従中 · マウスで投げられます' : '顔をクリックして位置を指定できます'
+    : `顔 ${faces.length}人 · 手 ${hands.length}本 · ${phase === 'held' ? 'つかんだ！ 相手へ動かしてパー' : controlHand ? gripped ? 'グーを認識' : 'パー・手を認識' : '手をカメラに見せよう'}`;
+  if (status !== lastTrackingText) { $('live-status').textContent = status; lastTrackingText = status; }
+  $('tracking-status').textContent = `${engine} / 顔 ${faces.length}人 / 手 ${hands.length}本 / 検出 ${elapsed ? Math.round(1000 / elapsed) : '—'}回/秒`;
 }
 
 function cameraRect() {
@@ -128,80 +153,136 @@ function screenPoint(point) {
   const rect = cameraRect();
   return { x: rect.x + ($('mirror').checked ? 1 - point.x : point.x) * rect.w, y: rect.y + point.y * rect.h };
 }
-function stopCamera() {
+function stopCamera(keepStream = false) {
   session++; clearTimeout(initTimer); requestReject?.(new Error('cancelled')); requestReject = null;
   worker?.terminate(); worker = null; workerReady = processing = loading = false;
-  stream?.getTracks().forEach(track => track.stop()); stream = null; video.srcObject = null;
+  if (!keepStream) { stream?.getTracks().forEach(track => track.stop()); stream = null; video.srcObject = null; }
   faces = []; hands = []; lastResult = 0; caster = receiver = null; cancelHold();
+  handSeenAt = 0; trackingInfo = {}; manualTarget = null; lastTrackingText = ''; frameFailures = 0;
   $('loading').hidden = true; $('stop-camera').hidden = true;
+  $('loading').classList.remove('camera-live');
+  $('live-status').hidden = true; $('target-auto').hidden = true;
   $('play-pair').disabled = $('play-solo').disabled = false; $('tracking-status').textContent = 'カメラは停止中';
 }
-async function startCamera(practice = false) {
-  stopCamera(); const id = session; solo = practice; if (solo) swapped = false;
-  source = 'camera'; resetRound(); loading = true; $('loading').hidden = false; $('stop-camera').hidden = false;
-  $('play-pair').disabled = $('play-solo').disabled = true;
-  $('source-badge').textContent = solo ? '● カメラ / ひとりで練習' : '● カメラ / 2人プレイ';
-  $('stage-note').textContent = solo ? '左に映って遊ぼう。右の相手は練習用です。' : '顔と手が映る距離で、左右に分かれて立とう';
+function trackingFallback(message) {
+  clearTimeout(initTimer); worker?.terminate(); worker = null; workerReady = processing = false;
+  const reject = requestReject; requestReject = null;
+  loading = false; $('loading').hidden = true;
+  $('play-pair').disabled = $('play-solo').disabled = false;
+  source = 'mouse-camera'; solo = false; resetRound(); mouseCameraRoles(); updateCameraLabels(); updateTrackingStatus();
+  reject?.(new Error('tracking-fallback'));
+  notice(message, 9000);
+}
+async function refreshCameraList() {
+  try {
+    const selected = $('camera-device').value;
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'videoinput');
+    $('camera-device').replaceChildren(new Option('自動で選ぶ', ''));
+    devices.forEach((device, index) => $('camera-device').add(new Option(device.label || `カメラ ${index + 1}`, device.deviceId)));
+    const active = stream?.getVideoTracks()[0]?.getSettings().deviceId;
+    $('camera-device').value = devices.some(device => device.deviceId === selected) ? selected : active || '';
+  } catch { /* A device list is optional; the default camera still works. */ }
+}
+async function startCamera(practice = false, input = 'hand', reuse = true) {
+  const keepStream = reuse && stream?.getVideoTracks().some(track => track.readyState === 'live');
+  stopCamera(keepStream); const id = session; solo = practice; if (solo) swapped = false;
+  source = input === 'mouse' ? 'mouse-camera' : 'camera'; resetRound();
+  loading = true; $('loading').hidden = false; $('stop-camera').hidden = false;
+  $('loading-title').textContent = 'カメラを準備しています';
+  $('loading-detail').textContent = 'カメラの使用を許可してください。';
+  updateCameraLabels();
+  const finishLoading = () => { clearTimeout(initTimer); loading = false; $('loading').hidden = true; };
   try {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('このブラウザーではカメラが使えません。localhostまたはHTTPSで開いてください。');
-    initTimer = setTimeout(() => { if (id === session) { startSample('mouse'); notice('準備が完了しませんでした。カメラの許可と接続を確認して、もう一度お試しください。', 8000); } }, 60000);
-    const media = await navigator.mediaDevices.getUserMedia({ audio: false, video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: $('facing').value } } });
-    if (id !== session) { media.getTracks().forEach(track => track.stop()); return; }
-    stream = media; video.srcObject = media; await video.play();
+    initTimer = setTimeout(() => { if (id === session) { startSample('mouse'); notice('カメラの許可と接続を確認して、もう一度お試しください。', 8000); } }, 60000);
+    if (!keepStream) {
+      const deviceId = $('camera-device').value;
+      const media = await navigator.mediaDevices.getUserMedia({ audio: false, video: { width: { ideal: 1280 }, height: { ideal: 720 }, ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: $('facing').value } }) } });
+      if (id !== session) { media.getTracks().forEach(track => track.stop()); return; }
+      stream = media; video.srcObject = media;
+    }
+    await video.play();
     if (id !== session) return;
-    worker = new Worker('./tracker-worker.js');
+    clearTimeout(initTimer); refreshCameraList();
+    stream.getVideoTracks()[0].onended = () => { if (id === session) { startSample('mouse'); notice('カメラが切断されました。接続して再開してください。'); } };
+    $('loading').classList.add('camera-live');
+    $('loading-title').textContent = input === 'mouse' ? '顔への自動追従を準備中' : 'グー・パーの認識を準備中';
+    $('loading-detail').textContent = input === 'mouse' ? '映像を見ながら、先にマウスで投げられます。' : '映像は表示中です。「映像＋マウスで投げる」にも切り替えられます。';
+    if (input === 'mouse') { mouseCameraRoles(); updateTrackingStatus(); }
+    initTimer = setTimeout(() => { if (id === session) trackingFallback('認識の準備に時間がかかっています。映像を残してマウス操作に切り替えました。'); }, 45000);
+    worker = new Worker('./tracker-worker.js?v=20261024-camera');
     await new Promise((resolve, reject) => {
       requestReject = reject;
       worker.onerror = () => {
         if (id !== session) return;
-        if (!workerReady) reject(new Error('検出モデルを読み込めませんでした。再起動してください。'));
-        else { startSample('mouse'); notice('検出が止まりました。カメラを再開してください。', 6000); }
+        trackingFallback('認識を起動できませんでした。映像を残してマウス操作に切り替えました。');
       };
       worker.onmessage = ({ data }) => {
         if (id !== session) return;
-        if (data.type === 'ready') { workerReady = true; requestReject = null; resolve(); }
+        if (data.type === 'ready') { workerReady = true; trackingInfo = data; requestReject = null; resolve(); }
         else if (data.type === 'result') { processing = false; acceptTracking(data); }
+        else if (data.type === 'status') {
+          trackingInfo = data;
+          if (source === 'camera' && (data.handEngine === 'unavailable' || data.faceEngine === 'unavailable')) {
+            source = 'mouse-camera'; solo = false; resetRound(); mouseCameraRoles(); updateCameraLabels();
+            notice('手・顔の認識が止まったため、映像を残してマウス操作に切り替えました。', 8000);
+          }
+          updateTrackingStatus();
+        }
         else if (data.type === 'error') {
           processing = false;
-          if (!workerReady) reject(new Error(data.message));
-          else { startSample('mouse'); notice('検出が止まりました。カメラを再開してください。', 6000); }
+          trackingFallback('認識が止まったため、映像を残してマウス操作に切り替えました。');
         }
       };
-      worker.postMessage({ type: 'init' });
+      worker.postMessage({ type: 'init', detectHands: input !== 'mouse' });
     });
     if (id !== session) return;
-    clearTimeout(initTimer); loading = false; $('loading').hidden = true;
-    $('play-pair').disabled = $('play-solo').disabled = false; lastFrame = 0; lastVideoTime = -1;
-    stream.getVideoTracks()[0].onended = () => { if (id === session) { startSample('mouse'); notice('カメラが切断されました。接続して再開してください。'); } };
+    finishLoading(); lastFrame = 0; lastVideoTime = -1;
+    if (source === 'camera' && (trackingInfo.handEngine === 'unavailable' || trackingInfo.faceEngine === 'unavailable')) {
+      source = 'mouse-camera'; solo = false; resetRound(); mouseCameraRoles(); updateCameraLabels();
+      notice('手・顔の認識を準備できませんでした。映像を残してマウス操作に切り替えました。', 9000);
+    }
+    updateTrackingStatus();
   } catch (error) {
     if (id !== session) return;
+    if (error.message === 'tracking-fallback') return;
+    if (stream && video.readyState >= 2) { trackingFallback('認識を準備できませんでした。映像を残してマウス操作に切り替えました。'); return; }
     startSample('mouse');
     const reasons = { NotAllowedError: 'カメラが許可されていません。ブラウザーのカメラ許可を確認してください。', NotFoundError: 'カメラが見つかりません。接続を確認してください。', NotReadableError: 'カメラを開けません。他のカメラアプリを閉じて、もう一度お試しください。' };
     notice(reasons[error.name] || `準備できませんでした：${error.message}`, 8000);
   }
 }
 async function requestFrame(time) {
-  if (!workerReady || processing || video.readyState < 2 || document.hidden || time - lastFrame < 80 || video.currentTime === lastVideoTime) return;
+  if (processing && time - lastFrame > 8000) { trackingFallback('認識の応答が止まりました。映像を残してマウス操作に切り替えました。'); return; }
+  if (!workerReady || processing || video.readyState < 2 || document.hidden || time - lastFrame < 40 || video.currentTime === lastVideoTime) return;
   const id = session; processing = true; lastFrame = time; lastVideoTime = video.currentTime;
   try {
     const scale = Math.min(640 / video.videoWidth, 640 / video.videoHeight, 1);
     const bitmap = await createImageBitmap(video, { resizeWidth: Math.round(video.videoWidth * scale), resizeHeight: Math.round(video.videoHeight * scale) });
     if (id !== session || !worker) { bitmap.close(); return; }
     worker.postMessage({ type: 'frame', bitmap, time }, [bitmap]);
-  } catch { if (id === session) processing = false; }
+    frameFailures = 0;
+  } catch {
+    if (id === session) {
+      processing = false;
+      if (++frameFailures >= 3) trackingFallback('映像を認識処理に渡せませんでした。映像を残してマウス操作に切り替えました。');
+    }
+  }
 }
 function acceptTracking(data) {
-  const time = performance.now(), elapsed = lastResult ? time - lastResult : 0; lastResult = time;
+  const now = performance.now(), time = data.time ?? now, elapsed = lastResult ? now - lastResult : 0; lastResult = now;
+  trackingInfo = { ...trackingInfo, ...data };
   faces = data.faces.map((points, index) => {
     const a = screenPoint(points[234]), b = screenPoint(points[454]), top = screenPoint(points[10]), bottom = screenPoint(points[152]);
     return { x: (a.x + b.x) / 2, y: (top.y + bottom.y) / 2, w: distance(a, b), h: distance(top, bottom), quaternion: faceQuaternion(data.matrices?.[index], $('mirror').checked) };
   });
+  if (source === 'mouse-camera') { mouseCameraRoles(); updateTrackingStatus(elapsed); return; }
   const roles = resolveRoles(faces, roleOptions()); caster = roles.caster; receiver = solo ? sampleFace('right') : roles.receiver;
   hands = data.hands.map((points, index) => {
     const mapped = points.map(screenPoint), palm = { x: (mapped[0].x + mapped[5].x + mapped[17].x) / 3, y: (mapped[0].y + mapped[5].y + mapped[17].y) / 3 };
-    return { points: mapped, wrist: mapped[0], palm, label: data.handedness?.[index]?.[0]?.categoryName };
+    return { points: mapped, wrist: mapped[0], palm, label: data.handedness?.[index]?.[0]?.categoryName, gesture: data.gestures?.[index]?.[0] };
   });
-  $('tracking-status').textContent = `顔 ${faces.length}人 / 手 ${hands.length}本 / 検出 ${elapsed ? Math.round(1000 / elapsed) : '—'}回/秒`;
+  updateTrackingStatus(elapsed);
   if (caster && receiver) {
     roleSince ||= time;
     if (phase === 'waiting' && time - roleSince > 400) phase = 'ready';
@@ -210,9 +291,16 @@ function acceptTracking(data) {
     if (phase === 'held') cancelHold('2人の顔が映ってから、もう一度つかもう');
     if (phase === 'ready') phase = 'waiting';
   }
-  const previous = controlHand;
-  controlHand = chooseControlHand(hands, previous, roleOptions());
-  if (!controlHand) { cancelHold(previous && phase === 'held' ? '手を見失いました。カボチャをもう一度つかもう' : null); dwell.reset(); return; }
+  // Pointer drags must never be released or cancelled by a hand inference.
+  if (!carving && pointer !== null) return;
+  const previous = controlHand, gap = handSeenAt ? time - handSeenAt : elapsed;
+  controlHand = chooseControlHand(hands, phase === 'held' || carving ? previous : null, { ...roleOptions(), elapsed: gap, anchor: restPose(time) });
+  if (!controlHand) {
+    // A brief missed frame can keep the held pose, but never creates a release.
+    if (!carving && phase === 'held' && previous && gap <= 220) { controlHand = previous; return; }
+    cancelHold(previous && phase === 'held' ? '手を見失いました。かぼちゃの近くで、もう一度グーにしよう' : null); dwell.reset(); return;
+  }
+  handSeenAt = time;
   if (carving) {
     const pinch = isPinched(controlHand.points, pinched);
     if (pointer === null) {
@@ -227,8 +315,8 @@ function acceptTracking(data) {
     if (dwell.update(distance(controlHand.palm, { x: 640, y: 625 }) < 60, time)) resetRound();
     return;
   }
-  const grip = handGrip(controlHand.points, gripped), point = controlHand.palm;
-  if (phase === 'ready' && grip && !gripped && distance(point, restPose(time)) < 140) {
+  const grip = handGrip(controlHand.points, gripped, controlHand.gesture), point = controlHand.palm;
+  if (phase === 'ready' && grip && distance(point, restPose(time)) < 170) {
     toss.begin(point, time); phase = 'held'; heldPose = { ...restPose(time), x: point.x, y: point.y };
   } else if (phase === 'held') {
     heldPose.x = point.x; heldPose.y = point.y;
@@ -240,6 +328,7 @@ function acceptTracking(data) {
     }
   }
   gripped = grip;
+  updateTrackingStatus(elapsed);
 }
 
 function openCarving() {
@@ -251,7 +340,8 @@ function openCarving() {
 function finishCarving() {
   art.cancel(); saveDraft();
   carving = false; $('exhibit').classList.remove('carving'); $('workshop').hidden = true; resetRound();
-  $('stage-note').textContent = source === 'camera' ? '作ったカボチャを、つかんで投げよう' : '作ったカボチャをドラッグして、相手へはなす';
+  if (cameraActive()) updateCameraLabels();
+  else $('stage-note').textContent = '作ったカボチャをドラッグして、相手へはなす';
   updateCue(); $('theater').scrollIntoView({ block: 'start' }); $('cue-title').focus({ preventScroll: true });
 }
 const carvingPose = () => { const [sx, sy] = shapeScale(); return { x: 640, y: 422, w: 530 * sx, h: 480 * sy }; };
@@ -282,11 +372,15 @@ function pointerPoint(event) {
   return { x: (event.clientX - box.left - (box.width - W * scale) / 2) / scale, y: (event.clientY - box.top - (box.height - H * scale) / 2) / scale };
 }
 canvas.addEventListener('pointerdown', event => {
-  if (loading || !$('throw-result').hidden) return;
+  if ((loading && !(source === 'mouse-camera' && stream && video.readyState >= 2)) || !$('throw-result').hidden) return;
   const point = pointerPoint(event);
   if (carving) { art.cancel(); pointer = event.pointerId; canvas.setPointerCapture(pointer); carveAt(point); return; }
   if (source === 'guide') return;
   if (phase === 'worn' && distance(point, { x: 640, y: 625 }) < 70) { resetRound(); return; }
+  if (source === 'mouse-camera' && phase === 'ready' && distance(point, restPose()) > 140) {
+    manualTarget = { x: clamp(point.x, 80, W - 80), y: clamp(point.y, 100, H - 100), w: 110, h: 145, manual: true };
+    mouseCameraRoles(); updateCameraLabels(); updateTrackingStatus(); return;
+  }
   if (phase !== 'ready' || distance(point, restPose()) > 140) return;
   pointer = event.pointerId; canvas.setPointerCapture(pointer); toss.begin(point, performance.now()); phase = 'held'; heldPose = { ...restPose(), x: point.x, y: point.y };
 });
@@ -310,7 +404,7 @@ canvas.addEventListener('pointerup', event => {
 canvas.addEventListener('pointercancel', () => { pointer = null; cancelHold(); });
 window.addEventListener('blur', () => { pointer = null; cancelHold(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { cancelHold(); lastResult = 0; } });
-window.addEventListener('pagehide', stopCamera);
+window.addEventListener('pagehide', () => stopCamera());
 
 function roundRect(x, y, w, h, r, fill, stroke) {
   c.beginPath(); c.roundRect(x, y, w, h, r); if (fill) { c.fillStyle = fill; c.fill(); } if (stroke) { c.strokeStyle = stroke; c.stroke(); }
@@ -416,21 +510,26 @@ function updateCue() {
   if (carving) { cue('HALLOWEEN WORKSHOP', '月夜のかぼちゃ工房', source === 'camera' ? '親指と人差し指をつまんで、きみだけの顔を彫ろう。' : 'マウスでひと彫り。きみだけのジャックオランタンに。'); return; }
   if (source === 'guide') return;
   if (phase === 'waiting') cue('GET READY', solo ? '左に映って、手を見せよう' : '2人で、左右の枠に入ろう', solo ? '右のお手本の相手に投げてみよう。' : 'オレンジが投げる人。むらさきがかぶる人。');
-  if (phase === 'ready') cue('01 / つかむ', 'カボチャを、つかもう。', source === 'mouse' ? 'カボチャをマウスでつかんで、相手のほうへ。' : '画面のカボチャに手を重ねて、にぎる。つまんでもOK。');
-  if (phase === 'held') cue('02 / 投げる', '相手へ振って、パッとはなす！', source === 'mouse' ? '少し大きく動かして、マウスをはなそう。' : '相手の方向へ手を動かしながら、手を開こう。');
+  if (phase === 'ready') cue('01 / つかむ', 'カボチャを、つかもう。', mouseControl() ? 'カボチャをマウスでつかんで、相手のほうへ。' : 'かぼちゃの近くでグー。つまんでもOK。手の丸印を重ねよう。');
+  if (phase === 'held') cue('02 / 投げる', '相手へ振って、パッとはなす！', mouseControl() ? '少し大きく動かして、マウスをはなそう。' : '相手の方向へ手を動かしながら、パーにしよう。');
   if (phase === 'flying') cue('02 / 投げる', 'いっけー！', 'カボチャが、相手の頭へ。');
-  if (phase === 'worn') cue('03 / かぶる', receiver ? 'スポッ！ お似合い！' : 'かぶる人は、同じ側へ戻ってね', receiver ? '顔を動かすと、カボチャもついてくる。' : '顔が映ったら、カボチャが戻ります。');
+  if (phase === 'worn') cue('03 / かぶる', receiver ? 'スポッ！ お似合い！' : 'かぶる人は、同じ側へ戻ってね', receiver ? receiver.manual ? '指定した位置にかぶせました。もう一度投げたり、展示したりできます。' : '顔を動かすと、カボチャもついてくる。' : '顔が映ったら、カボチャが戻ります。');
 }
 
 function render(time) {
   requestAnimationFrame(render); background(time);
-  if (source === 'camera') {
+  if (cameraActive()) {
     drawCamera(); requestFrame(time);
-    if (lastResult && time - lastResult > 650) { lastResult = 0; faces = []; hands = []; caster = null; receiver = solo ? sampleFace('right') : null; cancelHold(); roleSince = 0; if (phase === 'ready') phase = 'waiting'; }
+    if (lastResult && time - lastResult > 900) {
+      lastResult = 0; faces = []; hands = [];
+      if (source === 'camera') { caster = null; receiver = solo ? sampleFace('right') : null; cancelHold(); roleSince = 0; if (phase === 'ready') phase = 'waiting'; }
+      updateTrackingStatus();
+    }
+    if (source === 'mouse-camera') mouseCameraRoles();
     if (solo && !carving) person(sampleFace('right'), false, time);
   } else { const roles = sampleRoles(); caster = roles.caster; receiver = roles.receiver; }
   if (carving) {
-    drawWorkshopScene(c, { width: W, height: H, camera: source === 'camera' }); drawPumpkin(carvingPose());
+    drawWorkshopScene(c, { width: W, height: H, camera: cameraActive() }); drawPumpkin(carvingPose());
     if (source === 'camera') { const done = carvingDonePoint(); handCursor(controlHand, pinched); dwellButton(done.x, done.y, 'できた', time); }
     updateCue(); return;
   }
@@ -456,6 +555,11 @@ function render(time) {
   } else {
     if (source === 'mouse') { person(caster, true, time, phase === 'held' ? heldPose : null); person(receiver, false, time); }
     if (source === 'camera' && phase === 'waiting') zones();
+    if (source === 'mouse-camera' && receiver && (phase === 'ready' || phase === 'held')) {
+      c.save(); c.setLineDash([7, 8]); c.lineWidth = 2;
+      circle(receiver.x, receiver.y, 90, '#beafff0a', colors.violet); c.restore();
+      text(receiver.manual ? 'ここにかぶせる · 顔をクリックで変更' : 'この顔にかぶせる', receiver.x, receiver.y + 112, 14, colors.violet, 700);
+    }
     if (phase === 'ready' || phase === 'held') pose = phase === 'held' ? heldPose : restPose(time);
     if (phase === 'flying' && flight) {
       const progress = (time - flight.since) / 1100;
@@ -476,7 +580,7 @@ function render(time) {
       if (source === 'camera' && $('throw-result').hidden) dwellButton(640, 625, 'もう一度', time);
     }
     const roles = sampleRoles();
-    if (source === 'mouse' || phase !== 'waiting') {
+    if (mouseControl() || phase !== 'waiting') {
       rolePill(roles.caster.x, 661, '① 投げる人', colors.orange);
       rolePill(roles.receiver.x, 661, solo ? '② 練習用の相手' : '② かぶる人', colors.violet);
     }
@@ -487,13 +591,15 @@ function render(time) {
   }
   drawPumpkin(pose);
   if (source === 'camera') handCursor(controlHand, gripped);
-  if (source === 'mouse' && phase === 'ready') { text('つかんで →', restPose(time).x, restPose(time).y - 127, 17, colors.orange, 700); }
+  if (mouseControl() && phase === 'ready') { text('つかんで →', restPose(time).x, restPose(time).y - 127, 17, colors.orange, 700); }
 }
 
 $('play-pair').onclick = () => { if (carving) finishCarving(); startCamera(false); };
 $('play-solo').onclick = () => { if (carving) finishCarving(); startCamera(true); };
 $('guide').onclick = () => { if (carving) finishCarving(); startSample('guide'); };
-$('mouse').onclick = () => { if (carving) finishCarving(); startSample('mouse'); };
+$('mouse').onclick = () => { if (carving) finishCarving(); startCamera(false, 'mouse'); };
+$('mouse-sample').onclick = () => { if (carving) finishCarving(); startSample('mouse'); };
+$('target-auto').onclick = () => { manualTarget = null; mouseCameraRoles(); updateCameraLabels(); updateTrackingStatus(); };
 $('stop-camera').onclick = $('cancel-camera').onclick = () => { if (carving) finishCarving(); startSample('mouse'); };
 $('restart').onclick = resetRound;
 $('retry-throw').onclick = () => { resetRound(); updateCue(); $('theater').scrollIntoView({ block: 'start' }); };
@@ -525,10 +631,10 @@ $('smoothing').onchange = () => { art.configure({ smoothing: Number($('smoothing
 $('brush').oninput = () => art.configure({ size: Number($('brush').value) });
 document.querySelectorAll('[data-shape]').forEach(button => button.onclick = () => { art.cancel(); shape = button.dataset.shape; document.querySelectorAll('[data-shape]').forEach(item => item.setAttribute('aria-pressed', String(item === button))); queueDraft(); });
 function toggleSettings(open) { $('settings').hidden = !open; $('settings-button').setAttribute('aria-expanded', String(open)); }
-$('settings-button').onclick = () => toggleSettings($('settings').hidden); $('close-settings').onclick = () => toggleSettings(false);
-$('switch-camera').onclick = () => { toggleSettings(false); startCamera(solo); };
-$('mirror').onchange = () => { faces = []; caster = receiver = null; resetRound(); };
-$('swap').onclick = () => { if (solo) { notice('ひとり練習では左に立って遊びます'); return; } swapped = !swapped; resetRound(); notice(`投げる人は${swapped ? '右' : '左'}、かぶる人は${swapped ? '左' : '右'}です`); };
+$('settings-button').onclick = () => { toggleSettings($('settings').hidden); if (!$('settings').hidden) refreshCameraList(); }; $('close-settings').onclick = () => toggleSettings(false);
+$('switch-camera').onclick = () => { toggleSettings(false); startCamera(solo, source === 'mouse-camera' ? 'mouse' : 'hand', false); };
+$('mirror').onchange = () => { faces = []; hands = []; caster = receiver = manualTarget = null; resetRound(); if (cameraActive()) updateCameraLabels(); };
+$('swap').onclick = () => { if (solo) { notice('ひとり練習では左に立って遊びます'); return; } swapped = !swapped; manualTarget = null; resetRound(); notice(`投げる人は${swapped ? '右' : '左'}、かぶる人は${swapped ? '左' : '右'}です`); };
 $('assist').onclick = () => {
   if (carving) finishCarving();
   if (source === 'guide') { startSample('mouse'); const roles = sampleRoles(); caster = roles.caster; receiver = roles.receiver; }

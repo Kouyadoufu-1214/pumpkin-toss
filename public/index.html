@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#14131b"><title>Pumpkin Toss — 投げたら、友だちがカボチャに。</title>
-  <link rel="stylesheet" href="experience.css?v=20261022-startup">
+  <link rel="stylesheet" href="experience.css?v=20261024-camera">
 </head>
 <body>
 <main id="exhibit" class="exhibit carving">
@@ -15,15 +15,16 @@
     <video id="camera-video" muted playsinline hidden></video>
     <canvas id="screen" width="1280" height="720" aria-label="かぼちゃを彫り、完成した顔を相手へ投げて遊べるスクリーン。"></canvas>
     <div class="screen-top"><span id="source-badge" class="badge">● お手本</span><span id="renderer-status"></span></div>
+    <div id="live-status" class="live-status" role="status" hidden></div>
     <div id="cue" class="cue" aria-live="polite"><span id="cue-step">HALLOWEEN WORKSHOP</span><h1 id="cue-title" tabindex="-1">月夜のかぼちゃ工房</h1><p id="cue-detail">マウスでひと彫り。きみだけのジャックオランタンに。</p></div>
     <div class="screen-bottom"><span id="stage-note">お手本の映像です</span><button id="restart" class="glass" hidden>もう一度投げる ↶</button></div>
     <div id="message" class="message" role="status" hidden></div>
-    <div id="loading" class="loading" hidden><div class="spinner"></div><strong>カメラを準備しています</strong><p>カメラの使用を許可してください。初回は少し時間がかかります。</p><button id="cancel-camera" class="glass">キャンセル</button></div>
+    <div id="loading" class="loading" hidden><div class="spinner"></div><strong id="loading-title">カメラを準備しています</strong><p id="loading-detail">カメラの使用を許可してください。初回は少し時間がかかります。</p><button id="cancel-camera" class="glass">キャンセル</button></div>
   </section>
   <section class="control-deck">
     <div class="deck-caption"><span>STEP 02 / THROW</span><strong>できた顔を、投げてみよう。<br>投げ終わったら、展示へ。</strong></div>
-    <div class="play-buttons"><button id="play-pair" class="primary">◉ カメラで2人プレイ</button><button id="play-solo" class="secondary">ひとりで練習</button></div>
-    <div class="minor-controls"><button id="guide" class="text-button">お手本を見る</button><button id="mouse" class="text-button">マウスで試す</button><button id="customize" class="text-button">かぼちゃを作る ✎</button><button id="stop-camera" class="text-button" hidden>カメラを停止</button></div>
+    <div class="play-buttons"><button id="play-pair" class="primary">◉ 手で投げる・2人プレイ</button><button id="mouse" class="secondary">映像＋マウスで投げる</button></div>
+    <div class="minor-controls"><button id="play-solo" class="text-button">手でひとり練習</button><button id="guide" class="text-button">お手本を見る</button><button id="mouse-sample" class="text-button">カメラなしで試す</button><button id="target-auto" class="text-button" hidden>顔への自動追従に戻す</button><button id="customize" class="text-button">かぼちゃを作る ✎</button><button id="stop-camera" class="text-button" hidden>カメラを停止</button></div>
   </section>
   <section id="throw-result" class="throw-result" aria-labelledby="throw-result-title" hidden>
     <div class="result-copy"><span class="eyebrow">STEP 03 / GALLERY</span><h2 id="throw-result-title" tabindex="-1">このかぼちゃを展示する？</h2><p>投げた作品を、みんなの展示室に飾ろう。</p></div>
@@ -49,12 +50,13 @@
   </section>
   <section id="settings" class="settings" hidden>
     <div class="settings-heading"><h2>スタッフ用の設定</h2><button id="close-settings" aria-label="設定を閉じる">×</button></div>
-    <label>カメラ <select id="facing"><option value="user">前面 / 内蔵カメラ</option><option value="environment">背面カメラ</option></select></label>
+    <label>使うカメラ <select id="camera-device"><option value="">自動で選ぶ</option></select></label>
+    <label>自動選択時 <select id="facing"><option value="user">前面 / 内蔵カメラ</option><option value="environment">背面カメラ</option></select></label>
     <button id="switch-camera" class="secondary">このカメラで再開</button>
     <label><input id="mirror" type="checkbox" checked> 鏡のように左右反転する</label><label><input id="sound" type="checkbox"> 効果音を鳴らす</label>
     <button id="swap" class="secondary">投げる側を左右入れ替える</button><button id="assist" class="secondary">スタッフ操作で投げる</button>
     <p id="tracking-status" class="technical">カメラは停止中</p>
-    <p class="settings-note">PCのブラウザーで開き、カメラの使用を許可してください。会場ではPCをスクリーンにつなぎ、全画面表示で遊びます。初回は検出データの読み込みに時間がかかります。</p>
+    <p class="settings-note">カメラ許可後、接続されたUSBカメラを機種名で選べます。グー・パーが反応しにくいときは「映像＋マウスで投げる」で遊べます。映像はそのまま表示し、顔をクリックして位置を指定することもできます。</p>
   </section>
   <dialog id="setup-dialog">
     <button id="close-setup" class="dialog-close" aria-label="会場のイメージを閉じる">×</button><span class="eyebrow">会場での見え方</span><h2>大きな「不思議な鏡」を置こう。</h2><p>スクリーンに映った自分たちに、カボチャが重なります。</p>
@@ -73,6 +75,6 @@
     <noscript><p>JavaScriptが無効のため起動できません。JavaScriptが使えるPCのEdgeまたはChromeで、共有URLを開いてください。</p></noscript>
   </div>
 </section>
-<script src="startup.js?v=20261022-startup"></script>
+<script src="startup.js?v=20261024-camera"></script>
 </body>
 </html>

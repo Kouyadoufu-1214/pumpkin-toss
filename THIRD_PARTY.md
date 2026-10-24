@@ -13,10 +13,12 @@
 
 - Face Landmarker: https://developers.google.com/edge/mediapipe/solutions/vision/face_landmarker
 - Hand Landmarker: https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker
+- Gesture Recognizer: https://developers.google.com/edge/mediapipe/solutions/vision/gesture_recognizer/web_js
 - Face model: https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
 - Hand model: https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+- Gesture model (float16, version 1): https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task
 
-The download script stores these models locally. No remote service receives camera frames.
+The download script stores these versioned models locally. Gesture Recognizer provides hand landmarks and the `Closed_Fist` / `Open_Palm` categories used for throwing. Hand Landmarker remains a fallback if the gesture model is unavailable. All inference runs on the CPU in a Web Worker; mouse throwing can omit hand detection. No remote service receives camera frames.
 ## Three.js 0.180.0
 
 - Source: https://github.com/mrdoob/three.js/tree/r180

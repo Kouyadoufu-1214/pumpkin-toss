@@ -157,3 +157,11 @@
 .startup-card details{text-align:left;margin-top:24px;font-size:12px;color:#c2b2c7}.startup-card summary{cursor:pointer}
 .startup-card pre{padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;background:#18131e;border-radius:8px;line-height:1.7}
 
+
+/* Keep the camera visible while inference loads or pointer input is active. */
+.live-status{position:absolute;left:20px;bottom:54px;max-width:calc(100% - 40px);padding:8px 13px;border:1px solid #ffb76b60;border-radius:9px;background:#17121edb;color:#ffe1b9;font-size:12px;pointer-events:none}
+.carving .live-status{display:none}
+.loading.camera-live{inset:auto 16px 100px auto;max-width:340px;padding:16px;border-radius:12px;background:#17121ee8;border:1px solid #ffffff30;pointer-events:none;font-size:12px}
+.loading.camera-live .spinner{display:none}
+.loading.camera-live button{pointer-events:auto}
+.settings select{max-width:190px}

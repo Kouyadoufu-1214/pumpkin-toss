@@ -13,6 +13,7 @@ const files = [
   ['wasm/vision_wasm_nosimd_internal.wasm', `${cdn}/wasm/vision_wasm_nosimd_internal.wasm`],
   ['face_landmarker.task', 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'],
   ['hand_landmarker.task', 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'],
+  ['gesture_recognizer.task', 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task'],
   ['package.json', `${cdn}/package.json`],
   ['three/three.module.js', 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js'],
   ['three/three.core.js', 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.core.js'],
