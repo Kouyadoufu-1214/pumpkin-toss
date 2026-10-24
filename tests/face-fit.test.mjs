@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FACE_OVAL, measureFace, faceCoverSize, fallbackFacePose, manualFaceTarget, smoothFacePose } from '../public/face-fit.mjs';
+import { FACE_OVAL, measureFace, faceCoverRegion, faceCoverSize, fallbackFacePose, manualFaceTarget, smoothFacePose } from '../public/face-fit.mjs';
 
 function oval({ x = 800, y = 320, w = 120, h = 170, roll = 0 } = {}) {
   const points = [];
@@ -35,7 +35,7 @@ test('camera distance scales the face and fallback shell without a fixed pixel f
   for (const ratio of [.15, .5, 1, 3, 4]) {
     const face = measureFace(oval({ w: 120 * ratio, h: 170 * ratio }));
     const pose = fallbackFacePose(face);
-    near(pose.w * .78, face.w * 1.1); near(pose.h * .8, face.h * 1.1);
+    near(pose.w * .78, face.w * 1.48 * 1.1); near(pose.h * .8, face.h * 1.52 * 1.1);
   }
 });
 
@@ -59,6 +59,40 @@ test('wide and tall artwork keep their character without narrowing the face cove
   near(wide.h, normal.h); assert.ok(wide.w > normal.w);
   near(tall.w, normal.w); assert.ok(tall.h > normal.h);
   near(faceCoverSize(face, { scale: 1.2 }).w, normal.w * 1.2);
+});
+
+test('the default head envelope covers crown, temples, ears and chin beyond the measured face', () => {
+  const face = { x: 800, y: 330, w: 120, h: 170 };
+  const head = faceCoverRegion(face);
+  // These independent points describe visible head parts outside FaceLandmarker's
+  // forehead/cheek oval. Fitting the former 1.10x face box cannot cover them.
+  const headParts = [[0, -.94], [-.4, -.8], [.4, -.8], [-.66, -.4], [.66, -.4], [-.72, 0], [.72, 0], [-.62, .18], [.62, .18], [-.3, .48], [.3, .48], [0, .54]];
+  for (const [x, y] of headParts) {
+    const u = x * face.w / (head.w / 2), v = (face.y + y * face.h - head.y) / (head.h / 2);
+    assert.ok(u * u + v * v <= 1, `head part ${x}, ${y} must be covered`);
+  }
+  near(head.x, face.x); near(head.y, face.y - face.h * .19);
+  assert.ok(head.w > face.w * 1.5 && head.h > face.h * 1.6);
+});
+
+test('head coverage shifts toward the crown after rotation or mirroring, without changing measured face roles', () => {
+  for (const roll of [-.7, 0, .7, Math.PI / 2]) {
+    const face = measureFace(oval({ roll }));
+    const saved = { ...face }, head = faceCoverRegion(face), fallback = fallbackFacePose(face);
+    near(head.x, face.x + Math.sin(roll) * face.h * .19);
+    near(head.y, face.y - Math.cos(roll) * face.h * .19);
+    near(fallback.x, head.x); near(fallback.y, head.y); near(fallback.roll, roll);
+    assert.deepEqual(face, saved, 'role selection still receives the real face center');
+    for (const point of head.points) near((point.x / (head.w / 2)) ** 2 + (point.y / (head.h / 2)) ** 2, 1);
+  }
+});
+
+test('larger hairstyles can use the full 160 percent range while reset keeps the new head-covering default', () => {
+  const face = { x: 800, y: 330, w: 120, h: 170 };
+  const base = faceCoverRegion(face), large = faceCoverRegion(face, { scale: 1.6 });
+  near(large.w / base.w, 1.6); near(large.h / base.h, 1.6);
+  near(faceCoverRegion(face, { scale: Infinity }).w, base.w);
+  near(faceCoverRegion(face, { scale: 100 }).w, large.w);
 });
 
 test('clicking either face preserves that face size and unrecognised clicks reuse the current measured size', () => {

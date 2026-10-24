@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as THREE from '../public/vendor/three/three.module.js';
 import { Pumpkin3D, faceQuaternion, blendOrientation, createPumpkinGeometry, projectedCarvingPoint } from '../public/pumpkin-3d.mjs';
+import { faceCoverRegion } from '../public/face-fit.mjs';
 
 const near = (actual, expected, epsilon = 1e-6) => assert.ok(Math.abs(actual - expected) < epsilon, `${actual} != ${expected}`);
 test('face pose ignores position and scale and mirrors yaw with the video', () => {
@@ -142,6 +143,10 @@ function deliveryShell() {
   const begin = 28 + jsonLength + (view.byteOffset || 0) + (accessor.byteOffset || 0);
   const array = new Float32Array(bytes.buffer.slice(bytes.byteOffset + begin, bytes.byteOffset + begin + accessor.count * 12));
   const geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(array, 3));
+  const indices = gltf.accessors[gltf.meshes[meshIndex].primitives[0].indices], indexView = gltf.bufferViews[indices.bufferView];
+  assert.equal(indices.componentType, 5123);
+  const indexBegin = 28 + jsonLength + (indexView.byteOffset || 0) + (indices.byteOffset || 0);
+  geometry.setIndex(new THREE.BufferAttribute(new Uint16Array(bytes.buffer.slice(bytes.byteOffset + indexBegin, bytes.byteOffset + indexBegin + indices.count * 2)), 1));
   const node = gltf.nodes.find(item => item.mesh === meshIndex);
   assert.ok(!gltf.nodes.some(item => item.children?.includes(gltf.nodes.indexOf(node))), 'delivery shell has no parent transform');
   const transform = node.matrix ? new THREE.Matrix4().fromArray(node.matrix) : new THREE.Matrix4().compose(
@@ -152,12 +157,9 @@ function deliveryShell() {
 
 function assertFaceFit(pumpkin, face, options = {}) {
   const pose = pumpkin.fitFacePose(face, options); assert.ok(pose);
-  const box = projectedShellBox(pumpkin, pose, face);
-  const scale = options.scale ?? 1;
-  const w = face.w * 1.1 * scale * (options.shape === 'wide' ? 1.22 : 1);
-  const h = face.h * 1.1 * scale * (options.shape === 'tall' ? 1.18 : 1);
-  assert.ok(Math.abs(box.w / w - 1) < .025, `width ${box.w}, expected ${w}`);
-  assert.ok(Math.abs(box.h / h - 1) < .025, `height ${box.h}, expected ${h}`);
+  const cover = faceCoverRegion(face, options), box = projectedShellBox(pumpkin, pose, cover), { w, h } = cover;
+  assert.ok(box.w >= w * .99 && box.w <= w * 1.4, `width ${box.w}, head region ${w}`);
+  assert.ok(box.h >= h * .99 && box.h <= h * 1.4, `height ${box.h}, head region ${h}`);
   assert.ok(Math.abs(box.x) < Math.max(1, w * .01), `horizontal center ${box.x}`);
   assert.ok(Math.abs(box.y) < Math.max(1, h * .01), `vertical center ${box.y}`);
   return { pose, box };
@@ -186,17 +188,51 @@ test('face fit uses the same roll-free screen basis for yaw, pitch, and sideways
   pumpkin.geometry.dispose();
 });
 
-test('shape choices preserve face coverage and their canvas fallback has the same visible dimensions', () => {
+test('shape choices preserve the head covering region in both 3D and canvas', () => {
   const pumpkin = fittingHarness();
   const face = { x: 640, y: 360, w: 130, h: 180, roll: .55 };
   for (const shape of ['round', 'tall', 'wide']) {
     const { pose, box } = assertFaceFit(pumpkin, face, { shape, scale: 1.15 });
+    const cover = faceCoverRegion(face, { shape, scale: 1.15 });
     assert.ok(box.w > face.w && box.h > face.h);
-    near(pose.fallback.w * .78, face.w * 1.1 * 1.15 * (shape === 'wide' ? 1.22 : 1));
-    near(pose.fallback.h * .8, face.h * 1.1 * 1.15 * (shape === 'tall' ? 1.18 : 1));
-    near(pose.fallback.x, face.x); near(pose.fallback.y, face.y); near(pose.fallback.roll, face.roll);
+    assert.ok(pose.fallback.w * .78 >= cover.w); assert.ok(pose.fallback.h * .8 >= cover.h);
+    near(pose.fallback.x, cover.x); near(pose.fallback.y, cover.y); near(pose.fallback.roll, face.roll);
   }
   pumpkin.geometry.dispose();
+});
+
+test('the delivered 3D shell covers the estimated hair and ear outline in tilted and distant poses', () => {
+  const pumpkin = fittingHarness(deliveryShell());
+  const mesh = new THREE.Mesh(pumpkin.geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+  pumpkin.root.add(mesh);
+  const ray = new THREE.Raycaster();
+  for (const [x, y, w, h, pitch, yaw, roll, shape] of [
+    [640, 360, 130, 180, 0, 0, 0, 'round'],
+    [950, 300, 28, 42, 0, 0, 0, 'round'],
+    [280, 350, 250, 340, 0, 0, 0, 'round'],
+    [940, 340, 130, 180, .35, .65, .5, 'round'],
+    [310, 320, 100, 180, -.4, -.8, -.65, 'round'],
+    [850, 330, 80, 180, 0, 1.35, 0, 'round'],
+    [700, 360, 130, 180, 0, 0, 1.2, 'tall'],
+    [800, 340, 140, 180, .2, -.6, -.35, 'wide'],
+  ]) {
+    const quaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(pitch, yaw, -roll, 'YXZ'));
+    const face = { x, y, w, h, roll, quaternion: quaternion.toArray() }, cover = faceCoverRegion(face, { shape });
+    pumpkin.place(pumpkin.fitFacePose(face, { shape }));
+    const cos = Math.cos(roll), sin = Math.sin(roll);
+    // Independent of the fitting hull: every contour point and edge midpoint
+    // must hit an actual triangle of the shipped GLB, never the stem or leaf.
+    const points = cover.points.flatMap((point, i) => {
+      const next = cover.points[(i + 1) % cover.points.length];
+      return [point, { x: (point.x + next.x) / 2, y: (point.y + next.y) / 2 }];
+    });
+    for (const [i, point] of points.entries()) {
+      const sx = cover.x + point.x * cos - point.y * sin, sy = cover.y + point.x * sin + point.y * cos;
+      ray.setFromCamera({ x: sx / pumpkin.width * 2 - 1, y: 1 - sy / pumpkin.height * 2 }, pumpkin.camera);
+      assert.ok(ray.intersectObject(mesh, false).length, `head point ${i} escaped for yaw ${yaw}, roll ${roll}, size ${w}x${h}, ${shape}`);
+    }
+  }
+  mesh.material.dispose(); pumpkin.geometry.dispose();
 });
 
 test('fitting does not move the render root and refreshes cached support points after asset replacement', () => {

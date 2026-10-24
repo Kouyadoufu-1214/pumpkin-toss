@@ -1,7 +1,7 @@
 import { clamp, distance, isPinched } from './interaction.mjs';
 import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose } from './exhibit-logic.mjs?v=20261024-camera';
-import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs?v=20261025-face-fit';
-import { measureFace, fallbackFacePose, manualFaceTarget, smoothFacePose } from './face-fit.mjs';
+import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs?v=20261025-head-cover';
+import { measureFace, faceCoverRegion, fallbackFacePose, manualFaceTarget, smoothFacePose } from './face-fit.mjs?v=20261025-head-cover';
 import { PumpkinArt } from './pumpkin-art.mjs?v=20261020-blank';
 import { outlineInfo } from './carving-path.mjs';
 import { encodeMask, decodeMask, validateArtwork, MAX_GALLERY_MASK_LENGTH } from './artwork-codec.mjs';
@@ -158,8 +158,8 @@ function updateCameraLabels() {
 }
 function updateTrackingStatus(elapsed = 0) {
   const engine = trackingInfo.handEngine === 'gesture-recognizer' ? 'グー・パー認識' : trackingInfo.handEngine === 'hand-landmarker' ? '指の位置で認識' : '手の認識なし';
-  const status = phase === 'worn' ? receiver?.measured && !receiver.manual ? '顔の大きさに自動フィット · 距離と傾きに追従中' : '投球完了 · カメラ映像はそのまま表示中' : source === 'mouse-camera'
-    ? manualTarget ? '位置を指定中 · マウスで投げられます' : faces.length ? '顔サイズを計測中 · マウスで投げられます' : '顔をクリックして位置を指定できます'
+  const status = phase === 'worn' ? receiver?.measured && !receiver.manual ? '髪・耳まで覆うサイズで追従中' : '投球完了 · カメラ映像はそのまま表示中' : source === 'mouse-camera'
+    ? manualTarget ? '位置を指定中 · マウスで投げられます' : faces.length ? '頭全体にサイズ調整中 · マウスで投げられます' : '顔をクリックして位置を指定できます'
     : `顔 ${faces.length}人 · 手 ${hands.length}本 · ${phase === 'held' ? 'つかんだ！ 相手へ動かしてパー' : controlHand ? gripped ? 'グーを認識' : 'パー・手を認識' : '手をカメラに見せよう'}`;
   if (status !== lastTrackingText) { $('live-status').textContent = status; lastTrackingText = status; }
   $('tracking-status').textContent = `${engine} / 顔 ${faces.length}人 / 手 ${hands.length}本 / 検出 ${elapsed ? Math.round(1000 / elapsed) : '—'}回/秒`;
@@ -532,7 +532,7 @@ function updateCue() {
   if (phase === 'ready') cue('01 / つかむ', 'カボチャを、つかもう。', mouseControl() ? 'カボチャをマウスでつかんで、相手のほうへ。' : 'かぼちゃの近くでグー。つまんでもOK。手の丸印を重ねよう。');
   if (phase === 'held') cue('02 / 投げる', '相手へ振って、パッとはなす！', mouseControl() ? '少し大きく動かして、マウスをはなそう。' : '相手の方向へ手を動かしながら、パーにしよう。');
   if (phase === 'flying') cue('02 / 投げる', 'いっけー！', 'カボチャが、相手の頭へ。');
-  if (phase === 'worn') cue('03 / かぶる', receiver ? 'スポッ！ お似合い！' : 'かぶる人は、同じ側へ戻ってね', receiver ? receiver.manual ? '指定した位置にかぶせました。もう一度投げたり、展示したりできます。' : '顔の大きさにぴったり。近づいても、傾けてもついてくる。' : '顔が映ったら、カボチャが戻ります。');
+  if (phase === 'worn') cue('03 / かぶる', receiver ? 'スポッ！ お似合い！' : 'かぶる人は、同じ側へ戻ってね', receiver ? receiver.manual ? '指定した位置にかぶせました。もう一度投げたり、展示したりできます。' : '髪や耳まで、頭をすっぽり。近づいてもついてくる。' : '顔が映ったら、カボチャが戻ります。');
 }
 
 function render(time) {
@@ -576,9 +576,10 @@ function render(time) {
     if (source === 'mouse') { person(caster, true, time, phase === 'held' ? heldPose : null); person(receiver, false, time); }
     if (source === 'camera' && phase === 'waiting') zones();
     if (cameraActive() && receiver && !receiver.sample && (phase === 'ready' || phase === 'held')) {
+      const head = faceCoverRegion(receiver, { scale: (Number($('face-fit-scale').value) || 100) / 100, shape });
       c.save(); c.setLineDash([7, 8]); c.lineWidth = 2; c.strokeStyle = colors.violet;
-      c.beginPath(); c.ellipse(receiver.x, receiver.y, receiver.w * .55, receiver.h * .55, receiver.roll || 0, 0, Math.PI * 2); c.stroke(); c.restore();
-      text(receiver.manual ? 'ここにかぶせる · 位置固定' : '顔サイズに自動フィット', receiver.x, receiver.y + receiver.h * .6 + 22, 14, colors.violet, 700);
+      c.beginPath(); c.ellipse(head.x, head.y, head.w / 2, head.h / 2, head.roll, 0, Math.PI * 2); c.stroke(); c.restore();
+      text(receiver.manual ? 'ここにかぶせる · 位置固定' : '髪・耳まで覆うサイズに', head.x, head.y + head.h * .55 + 22, 14, colors.violet, 700);
     }
     if (phase === 'ready' || phase === 'held') pose = phase === 'held' ? heldPose : restPose(time);
     if (phase === 'flying' && flight) {

@@ -23,14 +23,31 @@ export function measureFace(points, mapPoint = point => point, quaternion = null
   return { x: origin.x + x * cos - y * sin, y: origin.y + x * sin + y * cos, w, h, roll, quaternion, measured: true };
 }
 
-export function faceCoverSize(face, { scale = 1, shape = 'round' } = {}) {
-  const margin = 1.10 * Math.max(.8, Math.min(1.3, Number.isFinite(scale) ? scale : 1));
-  return { w: face.w * margin * (shape === 'wide' ? 1.22 : 1), h: face.h * margin * (shape === 'tall' ? 1.18 : 1) };
+export function faceCoverRegion(face, { scale = 1, shape = 'round' } = {}) {
+  // Face landmarks end at the forehead/cheeks, not the crown or outer ears.
+  // Estimate a head envelope around that measurement; this is not hair segmentation.
+  const margin = 1.10 * Math.max(.8, Math.min(1.6, Number.isFinite(scale) ? scale : 1));
+  const roll = Number.isFinite(face.roll) ? face.roll : 0;
+  const rise = face.h * .19;
+  const w = face.w * 1.48 * margin * (shape === 'wide' ? 1.22 : 1);
+  const h = face.h * 1.52 * margin * (shape === 'tall' ? 1.18 : 1);
+  return {
+    x: face.x + Math.sin(roll) * rise, y: face.y - Math.cos(roll) * rise, w, h, roll,
+    points: Array.from({ length: 36 }, (_, i) => {
+      const angle = i * Math.PI * 2 / 36;
+      return { x: Math.cos(angle) * w / 2, y: Math.sin(angle) * h / 2 };
+    }),
+  };
+}
+
+export function faceCoverSize(face, options) {
+  const { w, h } = faceCoverRegion(face, options);
+  return { w, h };
 }
 
 export function fallbackFacePose(face, options) {
-  const cover = faceCoverSize(face, options);
-  return { x: face.x, y: face.y, w: cover.w / .78, h: cover.h / .8, roll: face.roll || 0, manual: !!face.manual };
+  const cover = faceCoverRegion(face, options);
+  return { x: cover.x, y: cover.y, w: cover.w / .78, h: cover.h / .8, roll: cover.roll, manual: !!face.manual };
 }
 
 export function manualFaceTarget(point, faces, current) {

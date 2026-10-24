@@ -7,6 +7,7 @@ import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction } f
 import { FACE_OVAL, measureFace, fallbackFacePose, manualFaceTarget } from '../public/face-fit.mjs';
 
 const experience = readFileSync(new URL('../public/experience.mjs', import.meta.url), 'utf8');
+const page = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 function section(from, to) {
   const start = experience.indexOf(from), end = experience.indexOf(to, start);
   assert.ok(start >= 0 && end > start, `production section exists: ${from}`);
@@ -18,7 +19,7 @@ const executable = [
   section('const colors =', 'function cue('),
   section('function notice(', 'function openCarving('),
   section('function pointerPoint(', 'function roundRect('),
-  section("$('target-auto').onclick", "$('face-fit-scale').oninput"),
+  section("$('target-auto').onclick", "$('stop-camera').onclick"),
 ].join('\n');
 
 function deferred() {
@@ -64,6 +65,9 @@ function cameraHarness({ getUserMedia, play } = {}) {
   const video = element('camera-video');
   Object.assign(video, { videoWidth: 1280, videoHeight: 720, readyState: 2, currentTime: 0, srcObject: null });
   video.play = play || (() => Promise.resolve());
+  const scaleInput = page.match(/<input\b[^>]*\bid="face-fit-scale"[^>]*>/)?.[0];
+  assert.ok(scaleInput, 'the fit slider must be available in the actual page');
+  for (const name of ['min', 'max', 'value']) element('face-fit-scale')[name] = scaleInput.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1];
   const window = element('window'), document = element('document'); document.hidden = false;
   class FakeWorker {
     constructor(url) { this.url = url; this.messages = []; this.terminated = 0; workers.push(this); }
@@ -133,7 +137,7 @@ test('measured camera targets scale with near and far faces without the old fixe
   assert.ok(near.w > 400 && near.h > 440, 'a nearby face must not be cut off by a fixed maximum');
   close(near.w / far.w, 16, 'width follows the measured distance change');
   close(near.h / far.h, 16, 'height follows the measured distance change');
-  close(near.x, .6 * 1280); close(near.y, .45 * 720);
+  close(near.x, .6 * 1280); close(near.y, .45 * 720 - h.state().receiver.h * .19);
 });
 
 test('measured sizes follow the selected receiver when two people swap roles or detection order changes', () => {
@@ -166,14 +170,73 @@ test('camera measurement applies letterboxing and mirroring before fitting the f
   close(mirrored.w, normal.w); close(mirrored.h, normal.h);
 });
 
-test('a tilted face keeps its measured dimensions and the fallback pumpkin keeps its tilt', () => {
+test('a tilted face keeps its dimensions while the pumpkin head centre follows the tilted upward offset', () => {
   const h = cameraHarness(); h.run("source = 'mouse-camera';");
   h.track({ faces: [faceLandmarks(.7, .45, .15, .3)] });
   const upright = h.run('currentTarget()');
   h.track({ faces: [faceLandmarks(.7, .45, .15, .3, .55)] });
   const tilted = h.run('currentTarget()');
   close(tilted.w, upright.w); close(tilted.h, upright.h);
-  close(tilted.roll, .55); close(tilted.x, upright.x); close(tilted.y, upright.y);
+  const face = h.state().receiver, offset = face.h * .19;
+  close(tilted.roll, .55);
+  close(tilted.x, face.x + Math.sin(.55) * offset);
+  close(tilted.y, face.y - Math.cos(.55) * offset);
+  assert.ok(tilted.x > upright.x, 'the offset follows head tilt instead of only moving vertically');
+});
+
+test('camera and mouse camera cover ear and hair margins in either mirror setting without moving face roles', () => {
+  for (const source of ['camera', 'mouse-camera']) {
+    for (const mirrored of [false, true]) {
+      const h = cameraHarness(); h.run(`source = '${source}';`);
+      h.element('mirror').checked = mirrored;
+      h.track({ faces: [faceLandmarks(.25, .4, .1, .2, -.35), faceLandmarks(.75, .45, .12, .24, .55)] });
+      const face = h.state().receiver, target = h.run('currentTarget()');
+      close(face.x, 960, 'role selection still uses the face centre');
+      close(face.y, mirrored ? .4 * 720 : .45 * 720);
+      assert.equal(face.measured, true);
+      // Check actual rendered fallback ellipse against expected ear/top hair
+      // margins; these are synthetic head extents, not segmentation of real hair.
+      for (const [u, v] of [[-.7, 0], [.7, 0], [0, -.9], [-.5, -.75], [.5, -.75], [0, .5]]) {
+        const x = face.x + u * face.w * Math.cos(face.roll) - v * face.h * Math.sin(face.roll);
+        const y = face.y + u * face.w * Math.sin(face.roll) + v * face.h * Math.cos(face.roll);
+        const dx = x - target.x, dy = y - target.y;
+        const localX = dx * Math.cos(target.roll) + dy * Math.sin(target.roll);
+        const localY = -dx * Math.sin(target.roll) + dy * Math.cos(target.roll);
+        const ellipse = (localX / (target.w * .39)) ** 2 + (localY / (target.h * .4)) ** 2;
+        assert.ok(ellipse <= 1, `${source}, mirror=${mirrored}: head margin ${u},${v} is covered`);
+      }
+      close(h.state().receiver.x, face.x); close(h.state().receiver.y, face.y);
+    }
+  }
+});
+
+test('the shifted head centre cannot move a valid receiver across the role boundary', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  h.track({ faces: [faceLandmarks(.25, .4), faceLandmarks(.56, .45, .15, .3, -.65)] });
+  const face = h.state().receiver, target = h.run('currentTarget()');
+  assert.ok(face.x > 1280 * .55);
+  assert.ok(target.x < 1280 * .55, 'tilted head offset crosses the screen zone boundary');
+  close(face.x, .56 * 1280);
+  h.setNow(1500);
+  h.track({ faces: [faceLandmarks(.25, .4), faceLandmarks(.56, .45, .15, .3, -.65)] });
+  assert.equal(h.state().phase, 'ready', 'the facial landmarks still define two valid participants');
+});
+
+test('the real size control reaches 160 percent, updates its label, and resets the cached head fit', () => {
+  const h = cameraHarness(); h.run("source = 'mouse-camera';");
+  const slider = h.element('face-fit-scale');
+  assert.equal(slider.max, '160');
+  assert.equal(slider.value, '100');
+  h.track({ faces: [faceLandmarks(.75, .45)] });
+  const normal = h.run('currentTarget()');
+  slider.value = slider.max; slider.oninput();
+  assert.equal(h.element('face-fit-value').textContent, '160%');
+  const enlarged = h.run('currentTarget()');
+  close(enlarged.w / normal.w, 1.6); close(enlarged.h / normal.h, 1.6);
+  h.element('face-fit-reset').onclick();
+  assert.equal(slider.value, '100');
+  assert.equal(h.element('face-fit-value').textContent, '100%');
+  close(h.run('currentTarget().w'), normal.w); close(h.run('currentTarget().h'), normal.h);
 });
 
 test('clicking a different face copies that face size and keeps it after detection disappears', () => {

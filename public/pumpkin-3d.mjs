@@ -1,7 +1,7 @@
 import * as THREE from './vendor/three/three.module.js';
 import { GLTFLoader } from './vendor/three/GLTFLoader.js';
 import { createFrontDepth, createCutWalls, createInnerShell } from './carving-walls.mjs';
-import { faceCoverSize, fallbackFacePose } from './face-fit.mjs';
+import { faceCoverRegion, fallbackFacePose } from './face-fit.mjs?v=20261025-head-cover';
 
 export function faceQuaternion(matrix, mirrored = true) {
   const values = matrix?.data;
@@ -40,6 +40,37 @@ export function projectedCarvingPoint(point) {
 
 const fitSamples = new WeakMap();
 
+function silhouetteHull(points) {
+  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  const turn = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  const half = list => {
+    const hull = [];
+    for (const point of list) {
+      while (hull.length > 1 && turn(hull[hull.length - 2], hull[hull.length - 1], point) <= 0) hull.pop();
+      hull.push(point);
+    }
+    hull.pop(); return hull;
+  };
+  return [...half(sorted), ...half(sorted.reverse())];
+}
+
+function silhouetteCoverageScale(shell, head) {
+  const hull = silhouetteHull(shell);
+  if (hull.length < 3) return Infinity;
+  let scale = 1;
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i], b = hull[(i + 1) % hull.length];
+    const nx = b.y - a.y, ny = a.x - b.x, support = nx * a.x + ny * a.y;
+    if (support <= 1e-6) return Infinity;
+    for (const point of head) {
+      // The cached shell hull is only an approximation to the ribbed outline.
+      // Keep the entire head contour inside it, with a small lip of pumpkin.
+      scale = Math.max(scale, 1.035 * (nx * point.x + ny * point.y) / support);
+    }
+  }
+  return scale;
+}
+
 function shellFitSamples(geometry) {
   if (fitSamples.has(geometry)) return fitSamples.get(geometry);
   const vertices = geometry?.attributes?.position;
@@ -71,34 +102,36 @@ function fittedFacePose(pumpkin, face, options) {
   if (!face || !['x', 'y', 'w', 'h'].every(key => Number.isFinite(face[key])) || face.w <= 0 || face.h <= 0) return null;
   const samples = shellFitSamples(pumpkin.geometry);
   if (!samples || samples.w <= 0 || samples.h <= 0) return null;
-  const cover = faceCoverSize(face, options), roll = Number.isFinite(face.roll) ? face.roll : 0;
+  const cover = faceCoverRegion(face, options), roll = Number.isFinite(cover.roll) ? cover.roll : 0;
   const cos = Math.cos(roll), sin = Math.sin(roll);
   const quaternion = new THREE.Quaternion();
   if (face.quaternion?.length === 4 && Array.from(face.quaternion).every(Number.isFinite) && Math.hypot(...face.quaternion) > .0001) {
     quaternion.fromArray(face.quaternion).normalize();
   } else quaternion.setFromEuler(new THREE.Euler(0, 0, -roll));
   const pose = {
-    x: face.x, y: face.y, w: cover.w / (samples.w * .37), h: cover.h / (samples.h * .43),
+    x: cover.x, y: cover.y, w: cover.w / (samples.w * .37), h: cover.h / (samples.h * .43),
     quaternion: quaternion.toArray(), roll, manual: !!face.manual, fallback: fallbackFacePose({ ...face, roll }, options),
   };
   const camera = pumpkin.camera;
   const projection = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
   const matrix = new THREE.Matrix4(), position = new THREE.Vector3(), size = new THREE.Vector3();
-  const bounds = (w = pose.w, h = pose.h) => {
+  const bounds = (w = pose.w, h = pose.h, includeOutline = false) => {
     position.set(pose.x - pumpkin.width / 2, pumpkin.height / 2 - pose.y, 0);
     size.set(w * .37, h * .43, Math.min(w, h) * .34);
     matrix.compose(position, quaternion, size).premultiply(projection);
     const e = matrix.elements;
     let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+    const points = includeOutline ? [] : null;
     for (const [x, y, z] of samples.points) {
       const denominator = e[3] * x + e[7] * y + e[11] * z + e[15];
       if (denominator <= camera.near) return null;
-      const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / denominator + 1) * pumpkin.width / 2 - face.x;
-      const sy = (1 - (e[1] * x + e[5] * y + e[9] * z + e[13]) / denominator) * pumpkin.height / 2 - face.y;
+      const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / denominator + 1) * pumpkin.width / 2 - cover.x;
+      const sy = (1 - (e[1] * x + e[5] * y + e[9] * z + e[13]) / denominator) * pumpkin.height / 2 - cover.y;
       const u = sx * cos + sy * sin, v = -sx * sin + sy * cos;
+      if (points) points.push({ x: u, y: v });
       left = Math.min(left, u); right = Math.max(right, u); top = Math.min(top, v); bottom = Math.max(bottom, v);
     }
-    return { w: right - left, h: bottom - top, x: (left + right) / 2, y: (top + bottom) / 2 };
+    return { w: right - left, h: bottom - top, x: (left + right) / 2, y: (top + bottom) / 2, points };
   };
   const error = box => box ? Math.hypot(Math.log(box.w / cover.w), Math.log(box.h / cover.h)) : Infinity;
   const center = box => {
@@ -141,6 +174,20 @@ function fittedFacePose(pumpkin, face, options) {
       if (!bounds(pose.w * next, pose.h * next)) break;
       pose.w *= next; pose.h *= next;
     }
+  }
+  // Matching the bounding rectangle alone can leave ears or diagonal parts of
+  // a head outside a round shell. Check the actual projected outline as well.
+  for (let iteration = 0; iteration < 6; iteration++) {
+    let box = bounds();
+    if (!box) return null;
+    center(box); box = bounds(pose.w, pose.h, true);
+    if (!box) return null;
+    const factor = silhouetteCoverageScale(box.points, cover.points);
+    if (!Number.isFinite(factor)) return null;
+    if (factor <= 1.002) break;
+    const next = Math.min(factor, 1.25);
+    if (!bounds(pose.w * next, pose.h * next)) break;
+    pose.w *= next; pose.h *= next;
   }
   return pose;
 }
@@ -256,8 +303,8 @@ export class Pumpkin3D {
 
   updateMask() { this.mask.needsUpdate = true; this.wallsDirty = true; }
 
-  // face.w/h are measured in screen pixels after undoing face.roll. Fit in
-  // that same basis: a turned face is never narrowed a second time by the 3D pose.
+  // Face measurements stay separate from the head cover region. Fit its full
+  // outline in the same roll-free basis, without shrinking a turned face twice.
   fitFacePose(face, options = {}) { return fittedFacePose(this, face, options); }
 
   place(pose) {
