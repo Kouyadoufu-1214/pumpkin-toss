@@ -1,8 +1,7 @@
 export const DEFAULT_TRACKING_TUNING = Object.freeze({
   minSpeed: 160,
   minDistance: 32,
-  openConfirmMs: 40,
-  gestureConfidence: .70,
+  motionFrames: 3,
   smoothingMs: 65,
   quality: 'auto',
 });
@@ -16,8 +15,7 @@ export function normalizeTrackingTuning(input = {}) {
   return {
     minSpeed: number('minSpeed', 80, 600),
     minDistance: number('minDistance', 20, 160),
-    openConfirmMs: number('openConfirmMs', 0, 180),
-    gestureConfidence: number('gestureConfidence', .50, .95),
+    motionFrames: Math.round(number('motionFrames', 2, 8)),
     smoothingMs: number('smoothingMs', 0, 160),
     quality: ['auto', 'light', 'high'].includes(source.quality) ? source.quality : DEFAULT_TRACKING_TUNING.quality,
   };

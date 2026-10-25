@@ -12,7 +12,7 @@ assert.ok(start >= 0 && end > start, 'the real result and reset functions must b
 // boundaries. A renderer, camera, and real clock are unnecessary for this flow.
 function resultHarness(overrides = {}) {
   const elements = new Map(), focusCalls = [], scrollCalls = [], classes = new Set();
-  const calls = { dwell: 0, toss: 0, art: 0 };
+  const calls = { dwell: 0, toss: 0, art: 0, motion: 0 };
   const document = { activeElement: null };
   const insideResult = new Set(['throw-result', 'throw-result-title', 'exhibit-artwork', 'retry-throw', 'edit-result']);
   const element = id => {
@@ -34,9 +34,9 @@ function resultHarness(overrides = {}) {
     wornSince: 1000, receiver: { x: 900, y: 280 },
     heldPose: {}, flight: {}, smoothTarget: {}, mouseTrackedFace: {}, controlHand: {},
     gripped: true, pinched: true, pointer: 1,
-    rememberedRoles: { caster: {}, receiver: {} }, pendingRelease: {},
+    rememberedRoles: { caster: {}, receiver: {} },
     handMotion: { reset() {} },
-    releaseRecovery: { reset() {} },
+    motionRelease: { reset() { calls.motion++; } },
     softFollow: { reset() {} },
     dwell: { reset() { calls.dwell++; } },
     toss: { cancel() { calls.toss++; } },
@@ -141,7 +141,7 @@ test('reset hides the result and clears the round, then a later completed throw 
     assert.equal(h.context.pinched, false);
     assert.equal(h.context.rememberedRoles.caster, null);
     assert.equal(h.context.rememberedRoles.receiver, null);
-    assert.equal(h.context.pendingRelease, null);
+    assert.equal(h.calls.motion, 1, 'a new participant starts without previous movement counts');
     assert.equal(h.calls.toss, 1);
     assert.equal(h.calls.art, 1);
     h.update(10000);

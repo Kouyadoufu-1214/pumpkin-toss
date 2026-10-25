@@ -1,5 +1,5 @@
 import { clamp, distance } from './interaction.mjs';
-import { normalizeTrackingTuning } from './tracking-tuning.mjs';
+import { normalizeTrackingTuning } from './tracking-tuning.mjs?v=20261025-motion-throw';
 
 // Zones are in mirrored screen coordinates; a single face is never its own receiver.
 export function resolveRoles(faces, { width = 1280, swapped = false, solo = false } = {}) {

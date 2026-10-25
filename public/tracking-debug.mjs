@@ -1,4 +1,4 @@
-import { DEFAULT_TRACKING_TUNING, normalizeTrackingTuning } from './tracking-tuning.mjs';
+import { DEFAULT_TRACKING_TUNING, normalizeTrackingTuning } from './tracking-tuning.mjs?v=20261025-motion-throw';
 
 const STORAGE_KEY = 'pumpkin-tracking-tuning-v1';
 const UPDATE_MS = 200;
@@ -10,8 +10,7 @@ const CONNECTIONS = [
 const FIELDS = [
   ['minSpeed', '投げる最低速度', 80, 600, 10, 'px/s'],
   ['minDistance', '投げる最低距離', 20, 160, 4, 'px'],
-  ['openConfirmMs', 'パーの確認時間', 0, 180, 10, 'ms'],
-  ['gestureConfidence', 'パーの信頼度', .5, .95, .05, '%'],
+  ['motionFrames', '投球までの動作確認', 2, 8, 1, 'フレーム'],
   ['smoothingMs', '表示のふわり補正', 0, 160, 5, 'ms'],
 ];
 const PHASE_NAMES = { ready: '軽く握るのを待っています', held: '手に持っています', flying: '投球中', worn: '投球完了' };
@@ -22,14 +21,10 @@ const REASON_NAMES = {
   'waiting-hand': '手を探しています。手のひら全体をカメラへ。',
   'waiting-grip': '手を少し丸めると、かぼちゃを持てます。強く握る必要はありません。',
   'wrong-side': '投げる人の側へ手を移してください。',
-  gripping: 'ゆるく握った手を認識して保持しています。相手へ振り、指を開き切ってください。',
-  swing: '相手へ手を振っています。指をしっかり開くと投げます。',
-  opening: 'まだ指を開く途中です。開き切るまで、かぼちゃを持ち続けます。',
-  'thumb-closed': '4本の指は開いています。親指も手のひらから離して広げてください。',
-  'open-confirm': '開き切ったパーを確認中です。確認時間を下げると早く離せます。',
+  gripping: 'ゆるく握った手を認識して保持しています。そのまま相手へ手を振ってください。',
+  swing: '相手へ手を振っています。動きが続くと自動で投げます。',
+  'motion-confirm': '相手へ向かう動きを確認中です。必要なフレーム数に達すると自動で投げます。',
   'missing-hand': '手を見失っています。画面内へ戻るまで保持します。',
-  'release-recovered-open': 'パーと投げる動きは確認済み。直後の認識抜けを補って投げました。',
-  'release-recovered-swing': '開きかけの指と連続した振りを確認。認識抜け中の開き切る動きを推定して投げました。',
   'edge-hold': '手が見切れています。誤って離さず、そのまま保持します。',
   'no-receiver': '相手の顔が見つかりません。かぶる人をカメラへ。',
   direction: '相手の方向へ、もう少し大きく手を動かしてください。',
@@ -83,13 +78,12 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
   const intro = element('p', 'tracking-debug__intro', 'F2 で表示切替。骨は補正前の検出位置です。橙＝操作する手、水色＝ほかの手。');
   const state = element('p', 'tracking-debug__state', 'カメラを開始すると認識状態が見られます。');
   const stages = element('ol', 'tracking-debug__stages');
-  const stageNodes = ['軽く握る', '相手へ振る', 'しっかり開く', '投球'].map(text => {
+  const stageNodes = ['軽く握る', '相手へ振る', '動きを確認', '投球'].map(text => {
     const node = element('li', '', text); stages.append(node); return node;
   });
   const reason = element('p', 'tracking-debug__reason');
   const lastFailure = element('p', 'tracking-debug__failure'); lastFailure.hidden = true;
-  const recovery = element('p', 'tracking-debug__recovery'); recovery.hidden = true;
-  const releaseLabel = element('label', 'tracking-debug__release-label', 'パーの確認');
+  const releaseLabel = element('label', 'tracking-debug__release-label', '投げる動きの確認');
   releaseLabel.setAttribute('for', 'tracking-debug-release');
   const release = element('progress', 'tracking-debug__release');
   release.id = 'tracking-debug-release'; release.max = 1; release.value = 0;
@@ -100,7 +94,7 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
     ['handMs', '手の処理時間'], ['faceMs', '顔の処理時間'], ['gesture', 'モデルの手の形'], ['confidence', '形の信頼度'],
     ['openness', '指の開き具合'], ['extendedFingers', '伸びた指（親指以外）'], ['thumbOpen', '親指の開き'],
     ['handCount', '検出した手'], ['receiverSeen', '相手の顔'], ['speed', '相手方向の速度'], ['travel', '移動距離'],
-    ['duration', '動作の観測時間'], ['gap', '観測の間隔'],
+    ['duration', '動作の観測時間'], ['gap', '観測の間隔'], ['motionFrames', '確認した動き'],
     ['quality', '描画品質'],
   ]) {
     const group = element('div'), term = element('dt', '', label), value = element('dd', '', '—');
@@ -109,7 +103,7 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
   const historyTitle = element('h3', '', '直近の動作');
   const events = element('ol', 'tracking-debug__events');
   const controlsTitle = element('h3', '', '反応を調整');
-  const help = element('p', 'tracking-debug__help', '速度・距離・確認時間を下げるほど投げやすくなります。補正は表示だけに適用します。');
+  const help = element('p', 'tracking-debug__help', '速度・距離・確認フレーム数を下げるほど投げやすくなります。フレームは相手へ動いた手の認識を数えます。指の開き具合は参考表示です。補正は表示だけに適用します。');
   const tuning = element('div', 'tracking-debug__tuning');
   for (const [key, label, min, max, step, unit] of FIELDS) {
     const group = element('div', 'tracking-debug__field');
@@ -138,7 +132,7 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
   const feedback = element('p', 'tracking-debug__help'); feedback.setAttribute('role', 'status');
   reset.addEventListener('click', () => { change(DEFAULT_TRACKING_TUNING); feedback.textContent = '調整値を標準に戻しました。'; });
   const stored = element('p', 'tracking-debug__help', '調整値はこの端末だけに保存します。');
-  panel.append(header, intro, state, stages, reason, recovery, lastFailure, releaseLabel, release, values, historyTitle, events,
+  panel.append(header, intro, state, stages, reason, lastFailure, releaseLabel, release, values, historyTitle, events,
     controlsTitle, help, tuning, reset, feedback, stored);
   // Fullscreen shows only descendants of #exhibit. Keep the panel inside that
   // root so F2 and the close button remain usable on the venue's screen.
@@ -156,17 +150,13 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
     const snapshot = latest, phase = snapshot.phase || 'ready';
     const gestureName = typeof snapshot.gesture === 'object' ? snapshot.gesture?.categoryName : snapshot.gesture;
     const stage = phase === 'flying' || phase === 'worn' ? 3 : phase === 'held'
-      ? snapshot.releaseProgress > 0 || snapshot.reason === 'opening' || snapshot.reason === 'thumb-closed' || snapshot.reason === 'open-confirm' ? 2 : 1 : 0;
+      ? snapshot.releaseProgress > 0 || snapshot.reason === 'motion-confirm' ? 2 : 1 : 0;
     state.textContent = snapshot.missing ? '手を見失っています · 保持して復帰を待機' : PHASE_NAMES[phase] || phase;
     stageNodes.forEach((node, index) => {
       node.className = index === stage ? 'is-current' : index < stage ? 'is-complete' : '';
       if (index === stage) node.setAttribute('aria-current', 'step'); else node.removeAttribute('aria-current');
     });
-    reason.textContent = reasonText(snapshot.reason) || (snapshot.missing ? '手を画面内に戻してください。' : '軽く握る → 相手へ振る → しっかり開く、の順に確認します。');
-    recovery.hidden = !snapshot.lastThrowRecovery;
-    recovery.textContent = snapshot.lastThrowRecovery === 'observed-open'
-      ? '今回の投球：パー確認後の認識抜けを補完'
-      : snapshot.lastThrowRecovery === 'opening-swing' ? '今回の投球：開く途中の振りから投球を推定（全開の指は未確認）' : '';
+    reason.textContent = reasonText(snapshot.reason) || (snapshot.missing ? '手を画面内に戻してください。' : '軽く握る → 相手へ振る → 動きを確認、の順に自動で投げます。');
     lastFailure.hidden = !snapshot.lastThrowReason;
     lastFailure.textContent = snapshot.lastThrowReason ? `直近の失敗：${reasonText(snapshot.lastThrowReason)}` : '';
     release.value = Math.max(0, Math.min(1, Number(snapshot.releaseProgress) || 0));
@@ -183,6 +173,7 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
       speed: `${finite(snapshot.speed)} / ${finite(snapshot.minSpeed ?? settings.minSpeed)} px/s`,
       travel: `${finite(snapshot.travel)} / ${finite(snapshot.minDistance ?? settings.minDistance)} px`,
       duration: finite(snapshot.duration, 0, ' ms'), gap: finite(snapshot.gap, 0, ' ms'),
+      motionFrames: `${finite(snapshot.motionFrames)} / ${finite(snapshot.requiredFrames ?? settings.motionFrames)} フレーム`,
       quality: QUALITY_NAMES[snapshot.quality ?? settings.quality] || '—',
     };
     for (const [key, value] of Object.entries(formatted)) metrics.get(key).textContent = value;
@@ -215,7 +206,7 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
   return {
     isOpen: () => open,
     toggle,
-    // Inference can pass brief transitions (for example a 40 ms open palm)
+    // Inference can pass brief transitions (for example a confirmed movement)
     // without adding DOM work or waiting for the next rendered snapshot.
     record(snapshot, time) {
       if (!open || destroyed || !snapshot) return;

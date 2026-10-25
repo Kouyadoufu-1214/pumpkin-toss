@@ -74,15 +74,17 @@ test('diagnostics mount within the app fullscreen root, with a body fallback for
   assert.equal(standalone.find(node => node.id === 'tracking-debug').parentElement, standalone.document.body);
 });
 
-test('release recovery remains explained after landing and distinguishes observation from inference', () => {
-  const h = harness(); h.api.toggle(true);
-  const note = h.find(node => node.className === 'tracking-debug__recovery');
-  h.api.update({ phase: 'flying', reason: 'release-recovered-open', lastThrowRecovery: 'observed-open' }, 1000);
-  assert.equal(note.hidden, false); assert.match(note.textContent, /パー確認後/);
-  h.api.update({ phase: 'worn', reason: 'landed', lastThrowRecovery: 'opening-swing' }, 1300);
-  assert.equal(note.hidden, false); assert.match(note.textContent, /推定.*未確認/);
-  h.api.update({ phase: 'ready', lastThrowRecovery: '' }, 1600);
-  assert.equal(note.hidden, true); assert.equal(note.textContent, '');
+test('motion confirmation controls replace legacy palm settings and recovery explanations', () => {
+  const h = harness(JSON.stringify({ openConfirmMs: 180, gestureConfidence: .95 })); h.api.toggle(true);
+  const frames = h.find(node => node.id === 'tracking-debug-motionFrames');
+  assert.equal(frames.value, '3'); assert.equal(frames.min, '2'); assert.equal(frames.max, '8'); assert.equal(frames.step, '1');
+  frames.value = '5'; frames.emit('input');
+  assert.equal(h.changes.at(-1).motionFrames, 5);
+  assert.equal(h.find(node => node.id === 'tracking-debug-openConfirmMs'), undefined);
+  assert.equal(h.find(node => node.id === 'tracking-debug-gestureConfidence'), undefined);
+  assert.equal(h.find(node => node.className === 'tracking-debug__recovery'), undefined);
+  assert.equal('openConfirmMs' in JSON.parse(h.storage.value), false);
+  assert.equal('gestureConfidence' in JSON.parse(h.storage.value), false);
 });
 
 test('saved settings are normalized, malformed or inaccessible storage falls back, and controls persist only tuning', () => {
@@ -114,16 +116,16 @@ test('diagnostics do no DOM work while closed and update at most five times a se
   h.api.update({ phase: 'held', reason: 'swing', handFps: 18 }, 50);
   h.api.update({ phase: 'held', reason: 'swing', handFps: 21 }, 209);
   assert.equal(h.writes(), opened);
-  h.api.update({ phase: 'held', reason: 'open-confirm', gesture: 'Open_Palm', releaseProgress: .5, confidence: .86,
+  h.api.update({ phase: 'held', reason: 'motion-confirm', gesture: 'Open_Palm', releaseProgress: .5, confidence: .86,
     renderFps: 60, handFps: 24, speed: 300, travel: 80, lastThrowReason: 'slow' }, 210);
   assert.ok(h.writes() > opened);
   const history = h.find(node => node.className === 'tracking-debug__events');
   assert.equal(history.children.length, 4, 'repeated swing snapshots are a single event');
-  assert.ok(history.children[0].textContent.includes('パーを確認中'));
+  assert.ok(history.children[0].textContent.includes('相手へ向かう動きを確認中'));
   assert.equal(h.find(node => node.id === 'tracking-debug-release').value, .5);
   assert.ok(h.find(node => node.className === 'tracking-debug__failure').textContent.includes('直近の失敗：速度・距離・観測時間が条件未達'));
   const current = h.find(node => node.attributes.get('aria-current') === 'step');
-  assert.equal(current.textContent, 'しっかり開く');
+  assert.equal(current.textContent, '動きを確認');
   for (let i = 0; i < 20; i++) h.api.update({ phase: 'held', reason: `reason ${i}` }, 410 + i * 200);
   assert.equal(history.children.length, 6);
   h.api.toggle(false); const closed = h.writes();
@@ -138,19 +140,19 @@ test('record preserves fast inference transitions without DOM work and ignores e
   assert.equal(history.children.length, 0);
   const writes = h.writes();
   h.api.record({ phase: 'held', reason: 'gripping' }, 10);
-  h.api.record({ phase: 'held', reason: 'open-confirm' }, 40);
+  h.api.record({ phase: 'held', reason: 'motion-confirm' }, 40);
   h.api.record({ phase: 'flying', reason: 'launched' }, 80);
   assert.equal(h.writes(), writes, 'recording cannot paint between the throttled snapshots');
   h.api.update({ phase: 'flying', reason: 'launched', duration: 160, gap: 40 }, 220);
   assert.equal(history.children.length, 3);
-  assert.ok(history.children[1].textContent.includes('パーを確認中'));
+  assert.ok(history.children[1].textContent.includes('相手へ向かう動きを確認中'));
   assert.ok(h.find(node => node.textContent === '160 ms'));
   assert.ok(h.find(node => node.textContent === '40 ms'));
   h.api.toggle(false); h.api.record({ phase: 'worn', reason: 'landed' }, 260); h.api.toggle(true);
   assert.equal(history.children.length, 3);
 });
 
-test('an initially open palm waits for a light grip and only a held hand can display the opening step', () => {
+test('a held hand displays counted motion frames without requiring an open palm', () => {
   const h = harness();
   h.api.toggle(true);
   assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, '軽く握る');
@@ -163,13 +165,19 @@ test('an initially open palm waits for a light grip and only a held hand can dis
   assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, '相手へ振る');
   assert.equal(h.find(node => node.id === 'tracking-debug-release').value, 0);
   assert.ok(h.find(node => node.className === 'tracking-debug__reason').textContent.includes('ゆるく握った手を認識'));
-  h.api.update({ phase: 'held', reason: 'opening', gesture: 'Open_Palm', releaseProgress: 0 }, 600);
-  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, 'しっかり開く');
-  assert.equal(h.find(node => node.id === 'tracking-debug-release').value, 0, 'partly open fingers do not imply release confirmation');
-  assert.ok(h.find(node => node.className === 'tracking-debug__reason').textContent.includes('開き切るまで'));
-  h.api.update({ phase: 'held', reason: 'open-confirm', gesture: 'Open_Palm', releaseProgress: .5 }, 800);
-  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, 'しっかり開く');
-  assert.equal(h.find(node => node.id === 'tracking-debug-release').value, .5);
+  h.api.update({ phase: 'held', reason: 'motion-confirm', gesture: 'Closed_Fist', motionFrames: 1, requiredFrames: 3, releaseProgress: 1 / 3 }, 600);
+  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, '動きを確認');
+  assert.equal(h.find(node => node.id === 'tracking-debug-release').value, 1 / 3);
+  const counted = h.find(node => node.tagName === 'DT' && node.textContent === '確認した動き').parentElement.children[1];
+  assert.equal(counted.textContent, '1 / 3 フレーム');
+  assert.ok(h.find(node => node.className === 'tracking-debug__reason').textContent.includes('自動で投げます'));
+  h.api.update({ phase: 'flying', reason: 'launched', motionFrames: 3, requiredFrames: 3, releaseProgress: 1 }, 800);
+  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, '投球');
+  assert.equal(h.find(node => node.id === 'tracking-debug-release').value, 1);
+  assert.equal(counted.textContent, '3 / 3 フレーム');
+  h.api.update({ phase: 'ready', reason: 'waiting-hand', motionFrames: 0, releaseProgress: 0 }, 1000);
+  assert.equal(counted.textContent, '0 / 3 フレーム');
+  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, '軽く握る');
 });
 
 test('geometric finger openness is shown independently of the raw model classification and confidence', () => {
@@ -177,11 +185,11 @@ test('geometric finger openness is shown independently of the raw model classifi
   h.api.toggle(true);
   const metric = label => h.find(node => node.tagName === 'DT' && node.textContent === label).parentElement.children[1];
   assert.equal(metric('指の開き具合').textContent, '—');
-  h.api.update({ phase: 'held', reason: 'opening', gesture: 'Open_Palm', confidence: .98, openness: .72 }, 200);
+  h.api.update({ phase: 'held', reason: 'motion-confirm', gesture: 'Open_Palm', confidence: .98, openness: .72 }, 200);
   assert.equal(metric('モデルの手の形').textContent, 'パー');
   assert.equal(metric('形の信頼度').textContent, '98%');
   assert.equal(metric('指の開き具合').textContent, '72%');
-  h.api.update({ phase: 'held', reason: 'open-confirm', gesture: 'Open_Palm', openness: 1 }, 400);
+  h.api.update({ phase: 'held', reason: 'motion-confirm', gesture: 'Open_Palm', openness: 1 }, 400);
   assert.equal(metric('指の開き具合').textContent, '100%');
   h.api.update({ phase: 'ready', reason: 'waiting-hand', openness: NaN }, 600);
   assert.equal(metric('指の開き具合').textContent, '—', 'missing geometry cannot look like measured closed fingers');
@@ -204,15 +212,15 @@ test('camera, hand, face and rendered frame rates are shown separately with unav
   assert.equal(metric('顔の検出 / 秒').textContent, '—');
 });
 
-test('full finger extension does not hide a thumb that has not opened', () => {
+test('thumb and finger geometry remains informational during motion confirmation', () => {
   const h = harness(); h.api.toggle(true);
   const metric = label => h.find(node => node.tagName === 'DT' && node.textContent === label).parentElement.children[1];
-  h.api.update({ phase: 'held', reason: 'thumb-closed', openness: 1, extendedFingers: 4, thumbOpen: false }, 200);
+  h.api.update({ phase: 'held', reason: 'motion-confirm', motionFrames: 2, requiredFrames: 3, openness: 1, extendedFingers: 4, thumbOpen: false }, 200);
   assert.equal(metric('指の開き具合').textContent, '100%');
   assert.equal(metric('伸びた指（親指以外）').textContent, '4 / 4 本');
   assert.equal(metric('親指の開き').textContent, 'まだ開いていない');
-  assert.match(h.find(node => node.className === 'tracking-debug__reason').textContent, /親指も/);
-  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, 'しっかり開く');
+  assert.match(h.find(node => node.className === 'tracking-debug__reason').textContent, /必要なフレーム数/);
+  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, '動きを確認');
   h.api.update({ thumbOpen: true, extendedFingers: 4 }, 400);
   assert.equal(metric('親指の開き').textContent, '開いている');
   h.api.update({ missing: true }, 600);

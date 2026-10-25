@@ -64,7 +64,7 @@
     <button id="swap" class="secondary">投げる側を左右入れ替える</button><button id="assist" class="secondary">スタッフ操作で投げる</button>
     <p id="tracking-status" class="technical">カメラは停止中</p>
     <button id="developer-mode" class="secondary">開発者モード（F2）</button>
-    <p class="settings-note">カメラ許可後、接続されたUSBカメラを機種名で選べます。手を軽く握って持ち、相手へ振りながら指を開き切ると投げられます。反応しにくいときは「映像＋マウスで投げる」で遊べます。映像はそのまま表示し、顔をクリックして位置を指定することもできます。</p>
+    <p class="settings-note">カメラ許可後、接続されたUSBカメラを機種名で選べます。手を軽く握って持ち、相手へ手を振ると自動で投げられます。持った後は指を開く必要はありません。反応しにくいときは「映像＋マウスで投げる」で遊べます。映像はそのまま表示し、顔をクリックして位置を指定することもできます。</p>
   </section>
   <dialog id="share-dialog" aria-labelledby="share-title">
     <button id="close-share" class="dialog-close" aria-label="共有を閉じる">×</button>
@@ -80,7 +80,7 @@
   <dialog id="setup-dialog">
     <button id="close-setup" class="dialog-close" aria-label="会場のイメージを閉じる">×</button><span class="eyebrow">会場での見え方</span><h2>大きな「不思議な鏡」を置こう。</h2><p>スクリーンに映った自分たちに、カボチャが重なります。</p>
     <div class="room-plan"><div class="plan-screen">スクリーン / 大きなモニター</div><div class="plan-camera">● カメラ</div><div class="sight-lines"></div><div class="plan-players"><span>① 投げる人</span><span>② かぶる人</span></div></div>
-    <ol><li>PCをモニターやプロジェクターにつないで、この画面を全画面にする。</li><li>カメラをスクリーンの近くに置き、2人の顔と手が映る位置に立つ。</li><li>投げる人は画面の左半分で手を軽く握る。かぼちゃを持ったら、相手へ振りながら指を開き切って投げる。</li></ol>
+    <ol><li>PCをモニターやプロジェクターにつないで、この画面を全画面にする。</li><li>カメラをスクリーンの近くに置き、2人の顔と手が映る位置に立つ。</li><li>投げる人は画面の左半分で手を軽く握る。かぼちゃを持ったら、相手へ手を振る。動きを確認すると自動で投げます。</li></ol>
     <p class="settings-note">最初は内蔵カメラとPC画面で試せます。外付けカメラがあると、会場で置く位置を調整しやすくなります。</p><button id="understood" class="primary">体験に戻る →</button>
   </dialog>
 </main>
@@ -94,6 +94,6 @@
     <noscript><p>JavaScriptが無効のため起動できません。JavaScriptが使えるPCのEdgeまたはChromeで、共有URLを開いてください。</p></noscript>
   </div>
 </section>
-<script src="startup.js?v=20261025-throw-confirmation"></script>
+<script src="startup.js?v=20261025-motion-throw"></script>
 </body>
 </html>
