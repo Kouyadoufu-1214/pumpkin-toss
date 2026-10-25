@@ -7,6 +7,7 @@ import { resolveRoles, chooseControlHand, classifyThrowHand, TossGesture, DwellA
 import { FACE_OVAL, measureFace, fallbackFacePose, manualFaceTarget } from '../public/face-fit.mjs';
 import { HandMotion, SoftFollow } from '../public/hand-motion.mjs';
 import { ReleaseRecovery } from '../public/release-recovery.mjs';
+import { InferenceRate } from '../public/inference-rate.mjs';
 import { RenderPerformance } from '../public/render-performance.mjs';
 import { DEFAULT_TRACKING_TUNING, normalizeTrackingTuning } from '../public/tracking-tuning.mjs';
 
@@ -41,9 +42,10 @@ function mediaStream() {
   return { track, getTracks: () => [track], getVideoTracks: () => [track] };
 }
 
-function cameraHarness({ getUserMedia, play } = {}) {
+function cameraHarness({ getUserMedia, play, videoFrameCallbacks = true } = {}) {
   let now = 1000, timerId = 0;
   const elements = new Map(), timers = new Map(), workers = [], mediaRequests = [], notices = [];
+  const videoCallbacks = new Map(), animationCallbacks = new Map();
   const effects = { begin: 0, move: 0, release: 0, cancel: 0 };
   const toss = new TossGesture();
   for (const name of Object.keys(effects)) {
@@ -69,6 +71,10 @@ function cameraHarness({ getUserMedia, play } = {}) {
   const video = element('camera-video');
   Object.assign(video, { videoWidth: 1280, videoHeight: 720, readyState: 2, currentTime: 0, srcObject: null });
   video.play = play || (() => Promise.resolve());
+  if (videoFrameCallbacks) {
+    video.requestVideoFrameCallback = callback => { videoCallbacks.set(++timerId, callback); return timerId; };
+    video.cancelVideoFrameCallback = id => { videoCallbacks.delete(id); };
+  }
   const scaleInput = page.match(/<input\b[^>]*\bid="face-fit-scale"[^>]*>/)?.[0];
   assert.ok(scaleInput, 'the fit slider must be available in the actual page');
   for (const name of ['min', 'max', 'value']) element('face-fit-scale')[name] = scaleInput.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1];
@@ -83,7 +89,7 @@ function cameraHarness({ getUserMedia, play } = {}) {
   const context = vm.createContext({
     W: 1280, H: 720, $: element, canvas, video, window, document,
     art: { cancel() {}, base: null }, toss, dwell: new DwellAction(), pumpkin: undefined,
-    clamp, distance, isPinched, resolveRoles, chooseControlHand, classifyThrowHand, HandMotion, SoftFollow, ReleaseRecovery, RenderPerformance, HELD_HAND_GRACE_MS,
+    clamp, distance, isPinched, resolveRoles, chooseControlHand, classifyThrowHand, HandMotion, SoftFollow, ReleaseRecovery, InferenceRate, RenderPerformance, HELD_HAND_GRACE_MS,
     normalizeTrackingTuning, loadTrackingTuning: () => ({ ...DEFAULT_TRACKING_TUNING }),
     measureFace, fallbackFacePose, manualFaceTarget,
     faceQuaternion: () => null,
@@ -94,13 +100,16 @@ function cameraHarness({ getUserMedia, play } = {}) {
       enumerateDevices: () => Promise.resolve([{ kind: 'videoinput', deviceId: 'usb-camera', label: 'USB Camera' }]),
     } },
     Option: function Option(label, value) { this.label = label; this.value = value; }, Worker: FakeWorker,
+    createImageBitmap: async () => ({ close() {} }),
+    requestAnimationFrame(callback) { animationCallbacks.set(++timerId, callback); return timerId; },
+    cancelAnimationFrame(id) { animationCallbacks.delete(id); },
     setTimeout(callback, duration) { timers.set(++timerId, { callback, duration }); return timerId; },
     clearTimeout(id) { timers.delete(id); },
   });
   vm.runInContext(executable, context);
   return {
-    context, elements, element, effects, mediaRequests, workers, video, timers, notices,
-    state: () => vm.runInContext('({ source, phase, pointer, heldPose, flight, faces, caster, receiver, manualTarget, mouseTrackedFace, stream, worker, workerReady, loading, session })', context),
+    context, elements, element, effects, mediaRequests, workers, video, timers, notices, videoCallbacks, animationCallbacks,
+    state: () => vm.runInContext('({ source, phase, pointer, heldPose, flight, faces, caster, receiver, manualTarget, mouseTrackedFace, stream, worker, workerReady, faceWorker, faceWorkerReady, loading, session })', context),
     run: code => vm.runInContext(code, context),
     setNow: time => { now = time; },
     point: (type, x, y, pointerId = 7) => canvas.listeners.get(type)?.({ clientX: x, clientY: y, pointerId }),
@@ -108,11 +117,27 @@ function cameraHarness({ getUserMedia, play } = {}) {
     receive: data => context.acceptTracking(data),
     start: (...args) => context.startCamera(...args),
     stop: () => context.stopCamera(),
-    attach(media, oldWorker = null) {
-      context.existingStream = media; context.existingWorker = oldWorker;
-      vm.runInContext('stream = existingStream; video.srcObject = stream; worker = existingWorker;', context);
+    attach(media, oldWorker = null, oldFaceWorker = null) {
+      context.existingStream = media; context.existingWorker = oldWorker; context.existingFaceWorker = oldFaceWorker;
+      vm.runInContext('stream = existingStream; video.srcObject = stream; worker = existingWorker; faceWorker = existingFaceWorker;', context);
     },
-    ready(worker = workers.at(-1)) { worker.emit({ type: 'ready', faceEngine: 'face-landmarker', handEngine: 'disabled' }); },
+    ready(worker) {
+      for (const selected of worker ? [worker] : workers.filter(item => !item.terminated)) {
+        const init = selected.messages.find(message => message.type === 'init') || {};
+        selected.emit({ type: 'ready', faceEngine: init.detectFaces === false ? 'disabled' : 'face-landmarker',
+          handEngine: init.detectHands === false ? 'disabled' : 'hand-landmarker' });
+      }
+    },
+    videoFrame(time, mediaTime = video.currentTime + 1 / 30) {
+      now = time; video.currentTime = mediaTime;
+      const callbacks = [...videoCallbacks.values()]; videoCallbacks.clear();
+      callbacks.forEach(callback => callback(time, { mediaTime }));
+    },
+    animationFrame(time) {
+      now = time;
+      const callbacks = [...animationCallbacks.values()]; animationCallbacks.clear();
+      callbacks.forEach(callback => callback(time));
+    },
     async settle() { await new Promise(resolve => setImmediate(resolve)); },
   };
 }
@@ -978,7 +1003,7 @@ test('an invalid hand is ignored and cannot prevent a valid fist from grabbing',
 test('quality changes camera transfer size without changing stage coordinates or upscaling small streams', async () => {
   const h = cameraHarness(), sizes = [];
   h.context.createImageBitmap = async (video, options) => { sizes.push(options); return { close() {} }; };
-  h.run('workerReady = true; worker = { postMessage() {} };');
+  h.run("source = 'camera'; workerReady = true; worker = { postMessage() {} };");
   await h.run('requestFrame(1000)');
   assert.equal(sizes[0].resizeWidth, 768); assert.equal(sizes[0].resizeHeight, 432);
   h.run("applyTrackingTuning({ quality: 'high' }); processing = false;"); h.video.currentTime++;
@@ -989,20 +1014,173 @@ test('quality changes camera transfer size without changing stage coordinates or
   assert.equal(sizes[2].resizeWidth, 640); assert.equal(sizes[2].resizeHeight, 480);
 });
 
-test('hands are applied before face work finishes without releasing the in-flight frame slot', async () => {
+test('hand results and completion do not wait for the independent face worker', async () => {
   const h = cameraHarness();
   const starting = h.start(false, 'hand'); await h.settle(); h.ready(); await starting;
-  h.run('processing = true');
-  const worker = h.workers.at(-1);
+  h.run('processing = true; faceProcessing = true');
+  const [worker, faceWorker] = h.workers;
+  assert.equal(worker.messages[0].detectFaces, false);
+  assert.equal(faceWorker.messages[0].detectHands, false);
   worker.emit({ type: 'hands', time: 1000, hands: [handLandmarks(180, 400)], gestures: [[{ categoryName: 'Closed_Fist', score: .95 }]] });
   assert.equal(h.state().phase, 'held', 'hand interaction is usable without waiting for the face result');
   assert.equal(h.run('processing'), true);
   assert.equal(h.effects.begin, 1);
-  worker.emit({ type: 'result', time: 1000, facesUpdated: true, faceTime: 1000, faces: [faceLandmarks(.75)], matrices: [] });
+  worker.emit({ type: 'result', time: 1000, facesUpdated: false });
   assert.equal(h.run('processing'), false);
+  assert.equal(h.run('faceProcessing'), true, 'hand completion does not release the face slot');
+  faceWorker.emit({ type: 'result', time: 1000, facesUpdated: true, faceTime: 1000, faces: [faceLandmarks(.75)], matrices: [] });
+  assert.equal(h.run('faceProcessing'), false);
   assert.equal(h.state().phase, 'held');
   assert.equal(h.effects.begin, 1, 'a completion cannot replay the hand sample');
   close(h.state().receiver.x, 960);
+});
+
+const workerFrames = worker => worker.messages.filter(message => message.type === 'frame');
+
+test('fresh hand frames continue while face inference stays busy and face messages cannot replace hand statistics', async () => {
+  const h = cameraHarness();
+  const starting = h.start(false, 'hand'); await h.settle(); h.ready(); await starting;
+  const [handWorker, faceWorker] = h.workers;
+  for (const [index, time] of Array.from({ length: 17 }, (_, i) => 1000 + i * 33).entries()) {
+    h.videoFrame(time); await h.settle();
+    assert.equal(workerFrames(handWorker).length, index + 1, 'hand throughput is independent of unfinished face work');
+    assert.equal(workerFrames(faceWorker).length, 1, 'a busy face worker cannot accumulate queued frames');
+    h.setNow(time + 8);
+    handWorker.emit({ type: 'result', time, hands: [], facesUpdated: false,
+      handEngine: 'hand-landmarker', faceEngine: 'disabled', handMs: 8 });
+    await h.settle();
+  }
+  const handFps = h.run('trackingInfo.handFps');
+  assert.ok(handFps >= 29 && handFps <= 31, `measured hand rate remains near 30fps: ${handFps}`);
+  h.setNow(1540);
+  faceWorker.emit({ type: 'result', time: 1000, facesUpdated: true, faceTime: 1000,
+    faces: [faceLandmarks(.75)], hands: [], faceEngine: 'face-landmarker', handEngine: 'disabled', faceMs: 540 });
+  assert.equal(h.run('trackingInfo.handEngine'), 'hand-landmarker');
+  assert.equal(h.run('trackingInfo.faceEngine'), 'face-landmarker');
+  assert.equal(h.run('trackingInfo.handFps'), handFps, 'face-only completion is not counted as a hand observation');
+  assert.equal(h.run('trackingInfo.handLatencyMs'), 8, 'slow face work cannot overwrite the measured hand latency');
+  h.stop();
+});
+
+test('video capture keeps only the latest frame while hands are busy and does not resend an identical frame', async () => {
+  const h = cameraHarness();
+  const starting = h.start(false, 'hand'); await h.settle(); h.ready(); await starting;
+  const [handWorker, faceWorker] = h.workers;
+  h.videoFrame(1000); await h.settle();
+  h.videoFrame(1033); h.videoFrame(1066); await h.settle();
+  assert.equal(workerFrames(handWorker).length, 1);
+  assert.equal(workerFrames(faceWorker).length, 1);
+  h.setNow(1070);
+  handWorker.emit({ type: 'result', time: 1000, hands: [], facesUpdated: false });
+  await h.settle();
+  assert.equal(workerFrames(handWorker).length, 2, 'completion immediately captures the newest available video frame');
+  h.setNow(1080);
+  handWorker.emit({ type: 'result', time: 1070, hands: [], facesUpdated: false });
+  await h.settle();
+  assert.equal(workerFrames(handWorker).length, 2, 'completion without a new video frame does not create another inference');
+  h.stop();
+});
+
+test('unique camera frames at jittered 60fps intervals are not throttled by a fixed frame gate', async () => {
+  const h = cameraHarness();
+  const starting = h.start(false, 'hand'); await h.settle(); h.ready(); await starting;
+  const handWorker = h.workers[0];
+  for (const [index, time] of [1000, 1015, 1032, 1047, 1064, 1079].entries()) {
+    h.videoFrame(time); await h.settle();
+    assert.equal(workerFrames(handWorker).length, index + 1, `unique frame at ${time}ms is submitted`);
+    h.setNow(time + 4);
+    handWorker.emit({ type: 'result', time, hands: [], facesUpdated: false });
+    await h.settle();
+  }
+  h.stop();
+});
+
+test('successful captures on one worker cannot erase consecutive capture failures on the other worker', async () => {
+  for (const failingLane of [0, 1]) {
+    const media = mediaStream(), h = cameraHarness({ getUserMedia: async () => media });
+    let captures = 0;
+    h.context.createImageBitmap = async () => {
+      const lane = captures++ % 2;
+      if (lane === failingLane) throw new Error('synthetic capture failure');
+      return { close() {} };
+    };
+    const starting = h.start(false, 'hand'); await h.settle(); h.ready(); await starting;
+    const healthyWorker = h.workers[1 - failingLane];
+    for (const [index, time] of [1000, 1100, 1200].entries()) {
+      h.videoFrame(time); await h.settle();
+      if (index < 2) {
+        assert.equal(h.state().source, 'camera', 'one or two capture failures permit a retry');
+        assert.equal(workerFrames(healthyWorker).length, index + 1, 'the other lane continues capturing successfully');
+        h.setNow(time + 8);
+        healthyWorker.emit(failingLane === 0
+          ? { type: 'result', time, facesUpdated: true, faceTime: time, faces: [] }
+          : { type: 'result', time, facesUpdated: false, hands: [] });
+        await h.settle();
+      }
+    }
+    assert.equal(h.state().source, 'mouse-camera', 'three consecutive failures on either lane trigger the usable mouse fallback');
+    assert.equal(h.state().stream, media, 'fallback preserves the live camera');
+    assert.equal(media.track.stops, 0);
+    assert.equal(h.state().worker, null);
+    assert.equal(h.state().faceWorker, null);
+    for (const worker of h.workers) assert.equal(worker.terminated, 1);
+    h.stop();
+  }
+});
+
+test('background tab time neither triggers detector fallback nor consumes the remaining response timeout', async () => {
+  const h = cameraHarness();
+  const starting = h.start(false, 'hand'); await h.settle(); h.ready(); await starting;
+  h.videoFrame(1000); await h.settle();
+  h.setNow(1100);
+  h.context.document.hidden = true;
+  h.context.document.listeners.get('visibilitychange')();
+  h.setNow(10100); await h.run('requestFrame(10100)');
+  assert.equal(h.state().source, 'camera', 'nine hidden seconds are not a detector failure');
+  for (const worker of h.workers) assert.equal(worker.terminated, 0);
+  h.context.document.hidden = false;
+  h.context.document.listeners.get('visibilitychange')();
+  await h.run('requestFrame(10100)');
+  assert.equal(h.state().source, 'camera', 'resuming a backgrounded tab does not immediately fall back');
+  h.setNow(17999); await h.run('requestFrame(17999)');
+  assert.equal(h.state().source, 'camera', 'the original 100ms of visible waiting leaves 7900ms after resuming');
+  h.setNow(18001); await h.run('requestFrame(18001)');
+  assert.equal(h.state().source, 'mouse-camera', 'an actual eight-second visible stall still falls back');
+  h.stop();
+});
+
+test('stopping camera inference terminates both workers and cancels video or animation callbacks', async () => {
+  for (const videoFrameCallbacks of [true, false]) {
+    const media = mediaStream(), h = cameraHarness({ videoFrameCallbacks, getUserMedia: async () => media });
+    const starting = h.start(false, 'hand'); await h.settle(); h.ready(); await starting;
+    assert.equal(videoFrameCallbacks ? h.videoCallbacks.size : h.animationCallbacks.size, 1);
+    if (videoFrameCallbacks) h.videoFrame(1000); else h.animationFrame(1000);
+    await h.settle();
+    assert.equal(workerFrames(h.workers[0]).length, 1);
+    assert.equal(workerFrames(h.workers[1]).length, 1);
+    h.stop();
+    assert.equal(h.videoCallbacks.size, 0);
+    assert.equal(h.animationCallbacks.size, 0);
+    assert.equal(media.track.stops, 1);
+    assert.equal(h.state().worker, null);
+    assert.equal(h.state().faceWorker, null);
+    for (const worker of h.workers) assert.equal(worker.terminated, 1);
+  }
+});
+
+test('bitmaps completing after camera stop are closed rather than delivered to either worker', async () => {
+  const h = cameraHarness(), captures = [deferred(), deferred()], bitmaps = [{ closes: 0 }, { closes: 0 }];
+  bitmaps.forEach(bitmap => { bitmap.close = () => { bitmap.closes++; }; });
+  let capture = 0;
+  h.context.createImageBitmap = () => captures[capture++].promise;
+  const starting = h.start(false, 'hand'); await h.settle(); h.ready(); await starting;
+  h.videoFrame(1000); await h.settle();
+  assert.equal(capture, 2, 'each detector owns its separate transferable bitmap');
+  h.stop();
+  captures.forEach((pending, index) => pending.resolve(bitmaps[index])); await h.settle();
+  assert.deepEqual(bitmaps.map(bitmap => bitmap.closes), [1, 1]);
+  for (const worker of h.workers) assert.equal(workerFrames(worker).length, 0);
+  assert.equal(h.videoCallbacks.size, 0);
 });
 
 test('skipping face inference preserves a recent target but cannot renew an old face indefinitely', () => {
@@ -1033,6 +1211,27 @@ test('fast observed swings across a large frame jump can launch on a single conf
       handedness: [[{ categoryName: 'Right' }]], gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
     assert.equal(h.state().phase, 'flying', 'the real hand moved farther than the old 190px reach');
     assert.equal(h.effects.release, 1);
+  }
+});
+
+test('landmark-only hand tracking launches a fast fully open swing without a gesture classifier', () => {
+  for (const swapped of [false, true]) {
+    for (const fullyOpen of [false, true]) {
+      const h = cameraHarness(); h.run(`source = 'camera'; swapped = ${swapped}; resetRound();`);
+      const start = swapped ? 950 : 330, direction = swapped ? -1 : 1;
+      const frame = (time, offset, y, releasing = false) => {
+        h.setNow(time);
+        const x = start + direction * offset;
+        h.track({ time, handEngine: 'hand-landmarker', faces: [faceLandmarks(swapped ? .2 : .8)],
+          hands: [releasing ? relaxedHandLandmarks(x, y, fullyOpen ? 0 : 1) : handLandmarks(x, y)],
+          handedness: [[{ categoryName: 'Right' }]], gestures: [],
+        });
+      };
+      frame(1000, 0, 400); frame(1040, 50, 395); frame(1120, 490, 360, true);
+      assert.equal(h.state().phase, fullyOpen ? 'flying' : 'held');
+      assert.equal(h.effects.release, fullyOpen ? 1 : 0, 'full finger geometry is still required on the faster path');
+      assert.equal(h.run('lastThrowRecovery'), '', 'the visible full-open sample supplies the actual release');
+    }
   }
 });
 
@@ -1107,16 +1306,20 @@ test('live tuning changes the required swing and release confirmation and retain
 });
 
 test('finished exhibition pauses hand work, and opening the developer view resumes it', async () => {
-  const h = cameraHarness(), sent = [];
-  h.context.sent = sent;
+  const h = cameraHarness(), sentHands = [], sentFaces = [];
+  h.context.sentHands = sentHands; h.context.sentFaces = sentFaces;
   h.context.createImageBitmap = async () => ({ close() {} });
-  h.run("source = 'camera'; phase = 'worn'; workerReady = true; worker = { postMessage(data) { sent.push(data); } };");
+  h.run(`source = 'camera'; phase = 'worn'; workerReady = faceWorkerReady = true;
+    worker = { postMessage(data) { sentHands.push(data); } };
+    faceWorker = { postMessage(data) { sentFaces.push(data); } };`);
   h.element('throw-result').hidden = false;
   await h.run('requestFrame(1000)');
-  assert.equal(sent[0].detectHands, false); assert.equal(sent[0].faceIntervalMs, 100);
-  h.run('processing = false; debugControls = {isOpen: () => true};'); h.video.currentTime++;
+  assert.equal(sentHands.length, 0, 'completed exhibitions do not spend work on the hand detector');
+  assert.equal(sentFaces[0].detectHands, false); assert.equal(sentFaces[0].faceIntervalMs, 100);
+  h.run('faceProcessing = false; debugControls = {isOpen: () => true};'); h.video.currentTime++;
   await h.run('requestFrame(1200)');
-  assert.equal(sent[1].detectHands, true); assert.equal(sent[1].faceIntervalMs, 240);
+  assert.equal(sentHands[0].detectHands, true);
+  assert.equal(sentFaces.length, 2, 'face tracking continues independently');
   h.setNow(1300); h.receive({time:1300, facesUpdated:true, faces:[faceLandmarks(.75)]});
   assert.equal(h.run('lastResult'), 1300, 'face-only results keep the finished live camera active');
 });
@@ -1149,7 +1352,7 @@ test('display compensation moves only the rendered pumpkin, never the measured t
 test('a fresh 30fps camera frame is not throttled by the previous 40ms gate', async () => {
   const h = cameraHarness(); let frames = 0;
   h.context.createImageBitmap = async () => { frames++; return { close() {} }; };
-  h.run('workerReady = true; worker = { postMessage() {} };');
+  h.run("source = 'camera'; workerReady = true; worker = { postMessage() {} };");
   await h.run('requestFrame(1000)');
   h.run('processing = false'); h.video.currentTime = .033;
   await h.run('requestFrame(1033)');
@@ -1198,16 +1401,19 @@ test('mouse camera has a usable target without faces and a clicked target surviv
   assert.equal(h.effects.begin, 0, 'aiming at a face must not grab the pumpkin');
 });
 
-test('switching to mouse camera reuses the stream and stops only the previous worker', async () => {
+test('switching to mouse camera reuses the stream and stops both previous workers', async () => {
   const h = cameraHarness(), media = mediaStream();
   const previous = { terminated: 0, terminate() { this.terminated++; } };
-  h.attach(media, previous);
+  const previousFace = { terminated: 0, terminate() { this.terminated++; } };
+  h.attach(media, previous, previousFace);
   const starting = h.start(false, 'mouse'); await h.settle();
   assert.equal(h.mediaRequests.length, 0);
   assert.equal(previous.terminated, 1);
+  assert.equal(previousFace.terminated, 1);
   assert.equal(media.track.stops, 0);
   assert.equal(h.video.srcObject, media);
   assert.equal(h.workers.at(-1).messages[0].detectHands, false);
+  assert.equal(h.workers.length, 1, 'mouse camera needs only a face detector');
   h.ready(); await starting;
   assert.equal(h.state().source, 'mouse-camera');
   assert.equal(h.state().stream, media);
@@ -1222,12 +1428,13 @@ test('switching to mouse camera reuses the stream and stops only the previous wo
 test('a failed tracking worker leaves the live camera available for mouse throws', async () => {
   const media = mediaStream(), h = cameraHarness({ getUserMedia: () => Promise.resolve(media) });
   const starting = h.start(false, 'hand'); await h.settle();
-  h.workers.at(-1).fail(); await starting;
+  h.workers[0].fail(); await starting;
   assert.equal(h.state().source, 'mouse-camera');
   assert.equal(h.state().stream, media);
   assert.equal(h.video.srcObject, media);
   assert.equal(media.track.stops, 0);
   assert.equal(h.state().worker, null);
+  assert.equal(h.state().faceWorker, null);
   assert.equal(h.state().loading, false);
   assert.equal(h.element('loading').hidden, true);
   assert.ok(h.state().receiver, 'mouse throwing remains usable without the detector');
@@ -1276,13 +1483,14 @@ test('an older permission request cannot replace or stop the newer camera sessio
 test('cancelling model initialization releases its camera and ignores the old worker response', async () => {
   const media = mediaStream(), h = cameraHarness({ getUserMedia: () => Promise.resolve(media) });
   const starting = h.start(false, 'hand'); await h.settle();
-  const oldWorker = h.workers.at(-1);
+  const oldWorkers = [...h.workers];
   h.stop(); await starting;
   assert.equal(media.track.stops, 1);
-  assert.equal(oldWorker.terminated, 1);
+  for (const oldWorker of oldWorkers) assert.equal(oldWorker.terminated, 1);
   assert.equal(h.state().stream, null);
   assert.equal(h.state().workerReady, false);
-  h.ready(oldWorker);
+  for (const oldWorker of oldWorkers) h.ready(oldWorker);
   assert.equal(h.state().workerReady, false);
+  assert.equal(h.state().faceWorkerReady, false);
   assert.equal(h.video.srcObject, null);
 });

@@ -15,32 +15,35 @@ function closeTask(task) {
   try { task?.close(); } catch { /* A failed model must not stop the other one. */ }
 }
 
-async function initialize({ detectHands = true, numHands = 4 }) {
+async function initialize({ detectFaces = true, detectHands = true, numHands = 4 }) {
   closeTask(faceTask); closeTask(handTask);
   faceTask = handTask = null;
   faceTime = null;
-  faceEngine = 'unavailable'; handEngine = detectHands ? 'unavailable' : 'disabled';
+  faceEngine = detectFaces ? 'unavailable' : 'disabled';
+  handEngine = detectHands ? 'unavailable' : 'disabled';
   faceError = handError = handWarning = null;
   let files;
   try {
     if (bundleError) throw new Error(bundleError);
     files = await self.exports.FilesetResolver.forVisionTasks(asset('wasm/'));
   } catch (error) {
-    faceError = String(error);
-    if (detectHands) handError = faceError;
+    if (detectFaces) faceError = String(error);
+    if (detectHands) handError = String(error);
     self.postMessage({ type: 'ready', ...status() });
     return;
   }
 
-  try {
-    faceTask = await self.exports.FaceLandmarker.createFromOptions(files, {
-      baseOptions: { modelAssetPath: asset('face_landmarker.task'), delegate: 'CPU' },
-      runningMode: 'VIDEO', numFaces: 2,
-      minFaceDetectionConfidence: 0.3, minFacePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
-      outputFacialTransformationMatrixes: true,
-    });
-    faceEngine = 'face-landmarker';
-  } catch (error) { faceError = String(error); }
+  if (detectFaces) {
+    try {
+      faceTask = await self.exports.FaceLandmarker.createFromOptions(files, {
+        baseOptions: { modelAssetPath: asset('face_landmarker.task'), delegate: 'CPU' },
+        runningMode: 'VIDEO', numFaces: 2,
+        minFaceDetectionConfidence: 0.3, minFacePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
+        outputFacialTransformationMatrixes: true,
+      });
+      faceEngine = 'face-landmarker';
+    } catch (error) { faceError = String(error); }
+  }
 
   if (detectHands) {
     // Four hands allow two participants without the target's hands hiding the
@@ -50,22 +53,24 @@ async function initialize({ detectHands = true, numHands = 4 }) {
       minHandDetectionConfidence: 0.4, minHandPresenceConfidence: 0.4, minTrackingConfidence: 0.4,
     };
     try {
-      handTask = await self.exports.GestureRecognizer.createFromOptions(files, {
+      // Grip and opening are calculated from bones in the application. Avoid
+      // running an extra gesture classifier on every frame when it is unused.
+      handTask = await self.exports.HandLandmarker.createFromOptions(files, {
         ...handOptions,
-        baseOptions: { modelAssetPath: asset('gesture_recognizer.task'), delegate: 'CPU' },
-        cannedGesturesClassifierOptions: {
-          categoryAllowlist: ['Closed_Fist', 'Open_Palm'], scoreThreshold: 0.45,
-        },
+        baseOptions: { modelAssetPath: asset('hand_landmarker.task'), delegate: 'CPU' },
       });
-      handEngine = 'gesture-recognizer';
+      handEngine = 'hand-landmarker';
     } catch (error) {
       handWarning = String(error);
       try {
-        handTask = await self.exports.HandLandmarker.createFromOptions(files, {
+        handTask = await self.exports.GestureRecognizer.createFromOptions(files, {
           ...handOptions,
-          baseOptions: { modelAssetPath: asset('hand_landmarker.task'), delegate: 'CPU' },
+          baseOptions: { modelAssetPath: asset('gesture_recognizer.task'), delegate: 'CPU' },
+          cannedGesturesClassifierOptions: {
+            categoryAllowlist: ['Closed_Fist', 'Open_Palm'], scoreThreshold: 0.45,
+          },
         });
-        handEngine = 'hand-landmarker';
+        handEngine = 'gesture-recognizer';
       } catch (fallbackError) { handError = String(fallbackError); }
     }
   }

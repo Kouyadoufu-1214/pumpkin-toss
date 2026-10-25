@@ -187,6 +187,23 @@ test('geometric finger openness is shown independently of the raw model classifi
   assert.equal(metric('指の開き具合').textContent, '—', 'missing geometry cannot look like measured closed fingers');
 });
 
+test('camera, hand, face and rendered frame rates are shown separately with unavailable values left blank', () => {
+  const h = harness(); h.api.toggle(true);
+  const metric = label => h.find(node => node.tagName === 'DT' && node.textContent === label).parentElement.children[1];
+  for (const label of ['画面の FPS', 'カメラ設定 FPS', '手の検出 / 秒', '顔の検出 / 秒']) {
+    assert.equal(metric(label).textContent, '—');
+  }
+  h.api.update({ renderFps: 59.8, cameraFps: 30, handFps: 24, faceFps: 6 }, 200);
+  assert.equal(metric('画面の FPS').textContent, '60');
+  assert.equal(metric('カメラ設定 FPS').textContent, '30');
+  assert.equal(metric('手の検出 / 秒').textContent, '24');
+  assert.equal(metric('顔の検出 / 秒').textContent, '6');
+  h.api.update({ cameraFps: Infinity, handFps: 0, faceFps: NaN }, 400);
+  assert.equal(metric('カメラ設定 FPS').textContent, '—');
+  assert.equal(metric('手の検出 / 秒').textContent, '0');
+  assert.equal(metric('顔の検出 / 秒').textContent, '—');
+});
+
 test('bone overlay uses raw mapped points only while enabled, preserves the canvas, and never draws a cached missing hand', () => {
   const h = harness(), calls = [], context = {};
   for (const name of ['save', 'restore', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'arc', 'fill', 'fillRect', 'fillText']) {

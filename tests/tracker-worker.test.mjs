@@ -51,28 +51,48 @@ function harness({ failInit = [], failFrame = [], failBundle = false, failFiles 
   };
 }
 
-test('default initialization recognizes gestures for both participants and preserves capture time', async () => {
+test('default initialization uses lighter hand landmarks for both participants and preserves capture time', async () => {
   const h = harness(); await h.init();
-  assert.deepEqual(h.created.map(item => item.kind), ['face', 'gesture']);
+  assert.deepEqual(h.created.map(item => item.kind), ['face', 'hand']);
   const ready = h.messages.at(-1);
   assert.equal(ready.type, 'ready');
   assert.equal(ready.faceEngine, 'face-landmarker');
-  assert.equal(ready.handEngine, 'gesture-recognizer');
+  assert.equal(ready.handEngine, 'hand-landmarker');
   const options = h.created[1].options;
   assert.equal(options.numHands, 4);
   assert.equal(options.baseOptions.delegate, 'CPU');
   assert.equal(options.runningMode, 'VIDEO');
-  assert.equal(options.baseOptions.modelAssetPath, 'https://example.test/pumpkin/vendor/gesture_recognizer.task');
+  assert.equal(options.baseOptions.modelAssetPath, 'https://example.test/pumpkin/vendor/hand_landmarker.task');
   const result = await h.frame(4321);
   assert.equal(result.type, 'result');
   assert.equal(result.time, 4321);
   assert.equal(h.hands().time, 4321);
-  assert.equal(h.hands().gestures, h.responses.gesture.gestures);
+  assert.equal(h.hands().gestures.length, 0);
   assert.equal(result.faces, h.responses.face.faceLandmarks);
-  assert.equal(h.hands().hands, h.responses.gesture.landmarks);
-  assert.equal(h.hands().worldHands, h.responses.gesture.worldLandmarks);
+  assert.equal(h.hands().hands, h.responses.hand.landmarks);
+  assert.equal(h.hands().worldHands, h.responses.hand.worldLandmarks);
   assert.equal(result.hands, undefined, 'frame completion never replays a hand observation');
   assert.ok(h.detected.every(item => item.time === 4321));
+});
+
+test('dedicated hand worker neither initializes nor runs face inference', async () => {
+  const h = harness({ failInit: ['face'] }); await h.init({ detectFaces: false });
+  assert.deepEqual(h.created.map(item => item.kind), ['hand']);
+  const ready = h.messages.at(-1);
+  assert.equal(ready.faceEngine, 'disabled');
+  assert.equal(ready.faceError, null);
+  assert.equal(ready.handEngine, 'hand-landmarker');
+  for (const time of [1000, 1034, 1068]) {
+    const result = await h.frame(time);
+    assert.equal(h.hands().time, time);
+    assert.equal(result.facesUpdated, false);
+    assert.equal(result.faces.length, 0);
+    assert.equal(result.faceTime, null);
+    assert.equal(result.faceMs, 0);
+  }
+  assert.deepEqual(h.detected.map(item => item.kind), ['hand', 'hand', 'hand']);
+  assert.equal(h.events.find(event => event.type === 'result').at, 18,
+    'the hand frame completes without waiting for the 45 ms face inference');
 });
 
 test('mouse mode never initializes or runs either hand model', async () => {
@@ -98,22 +118,23 @@ test('completed rounds can pause hand inference without unloading it or losing f
   assert.equal(h.hands(), undefined); assert.deepEqual(h.closed, []);
   await h.frame(1200, { detectHands: true, faceIntervalMs: 240 });
   assert.equal(h.hands().time, 1200);
-  assert.deepEqual(h.detected.map(item => item.kind), ['face', 'face', 'gesture']);
+  assert.deepEqual(h.detected.map(item => item.kind), ['face', 'face', 'hand']);
   await h.frame(1340, { detectHands: true, faceIntervalMs: 240 });
   assert.equal(h.messages.at(-1).facesUpdated, true);
 });
 
-test('missing gesture model falls back to hand landmarks without losing faces', async () => {
-  const h = harness({ failInit: ['gesture'] }); await h.init();
+test('missing hand landmark model falls back to gestures without losing faces or bones', async () => {
+  const h = harness({ failInit: ['hand'] }); await h.init();
   const ready = h.messages.at(-1);
-  assert.equal(ready.handEngine, 'hand-landmarker');
+  assert.deepEqual(h.created.map(item => item.kind), ['face', 'hand', 'gesture']);
+  assert.equal(ready.handEngine, 'gesture-recognizer');
   assert.equal(ready.handError, null);
-  assert.match(ready.handWarning, /gesture init failure/);
+  assert.match(ready.handWarning, /hand init failure/);
   const result = await h.frame();
   assert.equal(result.faces.length, 1);
-  assert.equal(h.hands().hands, h.responses.hand.landmarks);
-  assert.equal(h.hands().worldHands, h.responses.hand.worldLandmarks);
-  assert.equal(h.hands().gestures.length, 0);
+  assert.equal(h.hands().hands, h.responses.gesture.landmarks);
+  assert.equal(h.hands().worldHands, h.responses.gesture.worldLandmarks);
+  assert.equal(h.hands().gestures, h.responses.gesture.gestures);
 });
 
 test('failure of both hand models still produces face results for mouse throwing', async () => {
@@ -121,7 +142,8 @@ test('failure of both hand models still produces face results for mouse throwing
   const ready = h.messages.at(-1);
   assert.equal(ready.type, 'ready');
   assert.equal(ready.handEngine, 'unavailable');
-  assert.match(ready.handError, /hand init failure/);
+  assert.match(ready.handWarning, /hand init failure/);
+  assert.match(ready.handError, /gesture init failure/);
   await h.frame(100);
   const result = await h.frame(120);
   assert.equal(result.faces.length, 1);
@@ -130,12 +152,12 @@ test('failure of both hand models still produces face results for mouse throwing
   assert.equal(h.hands(), undefined);
 });
 
-test('face initialization failure does not prevent gestures from starting', async () => {
+test('face initialization failure does not prevent hand landmarks from starting', async () => {
   const h = harness({ failInit: ['face'] }); await h.init();
   const ready = h.messages.at(-1);
   assert.equal(ready.faceEngine, 'unavailable');
   assert.match(ready.faceError, /face init failure/);
-  assert.equal(ready.handEngine, 'gesture-recognizer');
+  assert.equal(ready.handEngine, 'hand-landmarker');
   const result = await h.frame();
   assert.equal(result.faces.length, 0);
   assert.equal(result.facesUpdated, false);
@@ -143,7 +165,7 @@ test('face initialization failure does not prevent gestures from starting', asyn
 });
 
 test('hand inference failure posts one status and later frames continue face tracking', async () => {
-  const h = harness({ failFrame: ['gesture'] }); await h.init();
+  const h = harness({ failFrame: ['hand'] }); await h.init();
   const first = await h.frame(100);
   const second = await h.frame(200);
   assert.equal(first.handEngine, 'unavailable');
@@ -154,11 +176,11 @@ test('hand inference failure posts one status and later frames continue face tra
   assert.equal(h.hands().worldHands.length, 0);
   assert.equal(h.messages.filter(message => message.type === 'status').length, 1);
   assert.equal(h.messages.filter(message => message.type === 'error').length, 0);
-  assert.equal(h.detected.filter(item => item.kind === 'gesture').length, 1);
-  assert.deepEqual(h.closed, ['gesture']);
+  assert.equal(h.detected.filter(item => item.kind === 'hand').length, 1);
+  assert.deepEqual(h.closed, ['hand']);
 });
 
-test('face inference failure leaves gesture inference alive and releases every frame', async () => {
+test('face inference failure leaves hand inference alive and releases every frame', async () => {
   const h = harness({ failFrame: ['face'] }); await h.init();
   await h.frame(100);
   const result = await h.frame(200);
@@ -184,6 +206,22 @@ test('shared runtime failure reports unavailable engines without blocking manual
   }
 });
 
+test('shared runtime failure leaves explicitly disabled face engine disabled and error-free', async () => {
+  for (const fault of [{ failBundle: true }, { failFiles: true }]) {
+    const h = harness(fault); await h.init({ detectFaces: false });
+    const ready = h.messages.at(-1);
+    assert.equal(ready.faceEngine, 'disabled');
+    assert.equal(ready.faceError, null);
+    assert.equal(ready.handEngine, 'unavailable');
+    assert.match(ready.handError, /failure/);
+    const result = await h.frame();
+    assert.equal(result.faceEngine, 'disabled');
+    assert.equal(result.facesUpdated, false);
+    assert.equal(result.faceTime, null);
+    assert.equal(h.hands(), undefined);
+  }
+});
+
 test('face detection uses forgiving confidence gates in camera and mouse modes', async () => {
   for (const detectHands of [true, false]) {
     const h = harness(); await h.init({ detectHands });
@@ -194,12 +232,12 @@ test('face detection uses forgiving confidence gates in camera and mouse modes',
     assert.equal(faceOptions.numFaces, 2);
     assert.equal(faceOptions.runningMode, 'VIDEO');
     assert.equal(faceOptions.outputFacialTransformationMatrixes, true);
-    assert.deepEqual(h.created.map(item => item.kind), detectHands ? ['face', 'gesture'] : ['face']);
+    assert.deepEqual(h.created.map(item => item.kind), detectHands ? ['face', 'hand'] : ['face']);
   }
 });
 
 test('both hand engines retain their confidence gates and multiple-hand capacity', async () => {
-  for (const failInit of [[], ['gesture']]) {
+  for (const failInit of [[], ['hand']]) {
     const h = harness({ failInit }); await h.init();
     for (const { kind, options } of h.created.filter(item => item.kind !== 'face')) {
       assert.equal(options.numHands, 4);
@@ -214,33 +252,38 @@ test('both hand engines retain their confidence gates and multiple-hand capacity
   }
 });
 
-test('world hand coordinates preserve result order for tilted fists and can be absent in older task results', async () => {
-  const h = harness(); await h.init();
-  h.responses.gesture.landmarks.push([{ x: .2, y: .3 }]);
-  h.responses.gesture.worldLandmarks.push([{ x: -.04, y: .01, z: -.02 }]);
-  h.responses.gesture.handedness.push([{ categoryName: 'Left' }]);
-  h.responses.gesture.gestures.push([{ categoryName: 'Open_Palm', score: .65 }]);
-  await h.frame();
-  const result = h.hands();
-  assert.equal(result.hands.length, 2);
-  assert.deepEqual(result.worldHands.map(hand => hand[0].x), [.02, -.04]);
-  assert.equal(result.gestures[1][0].categoryName, 'Open_Palm');
-  delete h.responses.gesture.worldLandmarks;
-  await h.frame(1300);
-  const legacy = h.hands();
-  assert.equal(legacy.worldHands.length, 0);
-  assert.equal(legacy.hands.length, 2);
+test('both hand engines preserve world-coordinate order and tolerate older task results without it', async () => {
+  for (const kind of ['hand', 'gesture']) {
+    const h = harness({ failInit: kind === 'gesture' ? ['hand'] : [] }); await h.init();
+    const response = h.responses[kind];
+    const firstWorldX = response.worldLandmarks[0][0].x;
+    response.landmarks.push([{ x: .2, y: .3 }]);
+    response.worldLandmarks.push([{ x: -.04, y: .01, z: -.02 }]);
+    response.handedness.push([{ categoryName: 'Left' }]);
+    response.gestures?.push([{ categoryName: 'Open_Palm', score: .65 }]);
+    await h.frame();
+    const result = h.hands();
+    assert.equal(result.hands.length, 2);
+    assert.deepEqual(result.worldHands.map(hand => hand[0].x), [firstWorldX, -.04]);
+    if (kind === 'gesture') assert.equal(result.gestures[1][0].categoryName, 'Open_Palm');
+    else assert.equal(result.gestures.length, 0);
+    delete response.worldLandmarks;
+    await h.frame(1300);
+    const legacy = h.hands();
+    assert.equal(legacy.worldHands.length, 0);
+    assert.equal(legacy.hands.length, 2);
+  }
 });
 
 test('hands arrive before face inference and frame completion releases the bitmap once', async () => {
   const h = harness(); await h.init();
   const result = await h.frame(1000);
   assert.deepEqual(h.events.filter(event => event.type !== 'ready'), [
-    { type: 'infer-gesture', at: 0 }, { type: 'hands', at: 20 },
-    { type: 'infer-face', at: 20 }, { type: 'result', at: 65 }, { type: 'bitmap-close', at: 65 },
+    { type: 'infer-hand', at: 0 }, { type: 'hands', at: 18 },
+    { type: 'infer-face', at: 18 }, { type: 'result', at: 63 }, { type: 'bitmap-close', at: 63 },
   ]);
-  assert.equal(h.hands().handMs, 20);
-  assert.equal(result.handMs, 20); assert.equal(result.faceMs, 45);
+  assert.equal(h.hands().handMs, 18);
+  assert.equal(result.handMs, 18); assert.equal(result.faceMs, 45);
   assert.equal(result.faceTime, 1000, 'capture time never uses the worker clock origin');
   for (const field of ['hands', 'worldHands', 'handedness', 'gestures']) assert.equal(field in result, false);
 });
@@ -255,7 +298,7 @@ test('hand frames do not rerun faces or refresh their age inside the face interv
   assert.equal(skipped.faces.length, 0); assert.equal(skipped.matrices.length, 0); assert.equal(skipped.faceMs, 0);
   assert.equal(next.facesUpdated, true); assert.equal(next.faceTime, 160);
   assert.deepEqual(h.detected.filter(item => item.kind === 'face').map(item => item.time), [0, 160]);
-  assert.deepEqual(h.detected.filter(item => item.kind === 'gesture').map(item => item.time), [0, 159, 160]);
+  assert.deepEqual(h.detected.filter(item => item.kind === 'hand').map(item => item.time), [0, 159, 160]);
   assert.equal(h.messages.filter(message => message.type === 'hands').length, 3);
 });
 
@@ -264,6 +307,19 @@ test('reinitialization clears the face interval and the previous task state', as
   await h.init();
   const result = await h.frame(20);
   assert.equal(result.facesUpdated, true); assert.equal(result.faceTime, 20);
-  assert.deepEqual(h.closed, ['face', 'gesture']);
+  assert.deepEqual(h.closed, ['face', 'hand']);
   assert.equal(h.hands().time, 20);
+});
+
+test('reinitializing as hand-only closes a previous face model and never retains its timestamps', async () => {
+  const h = harness(); await h.init(); await h.frame(10000);
+  await h.init({ detectFaces: false });
+  assert.deepEqual(h.closed, ['face', 'hand']);
+  const result = await h.frame(20);
+  assert.equal(result.faceEngine, 'disabled');
+  assert.equal(result.facesUpdated, false);
+  assert.equal(result.faceTime, null);
+  assert.equal(result.faceMs, 0);
+  assert.equal(h.hands().time, 20);
+  assert.equal(h.detected.filter(item => item.kind === 'face').length, 1);
 });

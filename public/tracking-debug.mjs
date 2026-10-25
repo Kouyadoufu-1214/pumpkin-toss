@@ -94,7 +94,8 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
   release.id = 'tracking-debug-release'; release.max = 1; release.value = 0;
   const values = element('dl', 'tracking-debug__metrics');
   for (const [key, label] of [
-    ['renderFps', '画面の FPS'], ['handFps', '手の検出 / 秒'], ['handLatencyMs', '手の遅れ'], ['renderMs', '描画の処理時間'],
+    ['renderFps', '画面の FPS'], ['cameraFps', 'カメラ設定 FPS'], ['handFps', '手の検出 / 秒'], ['faceFps', '顔の検出 / 秒'],
+    ['handLatencyMs', '手の遅れ'], ['renderMs', '描画の処理時間'],
     ['handMs', '手の処理時間'], ['faceMs', '顔の処理時間'], ['gesture', 'モデルの手の形'], ['confidence', '形の信頼度'],
     ['openness', '指の開き具合'],
     ['handCount', '検出した手'], ['receiverSeen', '相手の顔'], ['speed', '相手方向の速度'], ['travel', '移動距離'],
@@ -169,7 +170,8 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
     lastFailure.textContent = snapshot.lastThrowReason ? `直近の失敗：${reasonText(snapshot.lastThrowReason)}` : '';
     release.value = Math.max(0, Math.min(1, Number(snapshot.releaseProgress) || 0));
     const formatted = {
-      renderFps: finite(snapshot.renderFps), handFps: finite(snapshot.handFps),
+      renderFps: finite(snapshot.renderFps), cameraFps: finite(snapshot.cameraFps),
+      handFps: finite(snapshot.handFps), faceFps: finite(snapshot.faceFps),
       handLatencyMs: finite(snapshot.handLatencyMs, 0, ' ms'), renderMs: finite(snapshot.renderMs, 1, ' ms'),
       handMs: finite(snapshot.handMs, 1, ' ms'), faceMs: finite(snapshot.faceMs, 1, ' ms'),
       gesture: GESTURE_NAMES[gestureName] || gestureName || '—', confidence: finite(Number.isFinite(snapshot.confidence) ? snapshot.confidence * 100 : NaN, 0, '%'),

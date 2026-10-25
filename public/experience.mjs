@@ -10,9 +10,10 @@ import { drawWorkshopScene } from './workshop-scene.mjs';
 import { setupShareControls } from './share-link.mjs';
 import { HandMotion, SoftFollow } from './hand-motion.mjs?v=20261025-dev-tools';
 import { normalizeTrackingTuning } from './tracking-tuning.mjs';
-import { loadTrackingTuning, setupTrackingDebug } from './tracking-debug.mjs?v=20261025-release-recovery';
+import { loadTrackingTuning, setupTrackingDebug } from './tracking-debug.mjs?v=20261025-recognition-fps';
 import { RenderPerformance } from './render-performance.mjs';
 import { ReleaseRecovery } from './release-recovery.mjs?v=20261025-release-recovery';
+import { InferenceRate } from './inference-rate.mjs';
 
 const $ = id => document.getElementById(id);
 const canvas = $('screen'), c = canvas.getContext('2d'), video = $('camera-video');
@@ -25,7 +26,11 @@ let guideStart = performance.now(), heldPose = null, flight = null, wornSince = 
 let caster = null, receiver = null, controlHand = null, gripped = false, pinched = false;
 let lastResult = 0, faces = [], hands = [], smoothTarget = null, pointer = null, messageTimer, lastCue = '';
 let session = 0, stream = null, worker = null, workerReady = false, processing = false, lastFrame = 0, lastVideoTime = -1, loading = false, initTimer, requestReject;
+let faceWorker = null, faceWorkerReady = false, faceProcessing = false, lastFaceFrame = 0, lastFaceVideoTime = -1;
+let captureCallback = null, captureUsesVideo = false, captureRunning = false, cameraFrameToken = null, captureHiddenAt = null;
+const handRate = new InferenceRate(), faceRate = new InferenceRate();
 let manualTarget = null, mouseTrackedFace = null, handSeenAt = 0, trackingInfo = {}, lastTrackingText = '', frameFailures = 0;
+let faceFrameFailures = 0;
 const FACE_GRACE_MS = 1400;
 let faceSampleTime = null, mouseFaceSeenAt = null;
 let renderTime = 0;
@@ -90,6 +95,7 @@ function updateDeveloper(time) {
   const metrics = phase === 'held' && !handMissing && point
     ? toss.diagnostics(point, pendingRelease?.time ?? handSeenAt, currentTarget()) : lastThrowMetrics;
   debugControls.update({ renderFps: renderPerformance.fps, renderMs: renderPerformance.renderMs,
+    faceFps: trackingInfo.faceFps, cameraFps: trackingInfo.cameraFps,
     handFps: trackingInfo.handFps, handLatencyMs: trackingInfo.handLatencyMs, handMs: trackingInfo.handMs,
     faceMs: trackingInfo.lastFaceMs, phase, gesture: controlHand?.gesture?.categoryName || 'None',
     confidence: controlHand?.gesture?.score, openness: handMissing ? undefined : controlHand?.throwShape?.openness,
@@ -273,6 +279,8 @@ function handAtCameraEdge(hand, marginRatio = .04) {
     || point.y < rect.y + margin || point.y > rect.y + rect.h - margin);
 }
 function expireTracking(time) {
+  if (time - trackingInfo.lastHandCompletedAt > 1000) trackingInfo.handFps = 0;
+  if (time - trackingInfo.lastFaceCompletedAt > 1000) trackingInfo.faceFps = 0;
   // Face grace is measured from the real capture, independently of hand work
   // or the worker's 900ms stall timeout. Empty/skipped results cannot renew it.
   if (faceSampleTime !== null && time - faceSampleTime > FACE_GRACE_MS) faces = [];
@@ -294,11 +302,14 @@ function expireTracking(time) {
 }
 function stopCamera(keepStream = false) {
   session++; clearTimeout(initTimer); requestReject?.(new Error('cancelled')); requestReject = null;
+  stopCaptureLoop(); faceWorker?.terminate(); faceWorker = null; faceWorkerReady = faceProcessing = false;
   worker?.terminate(); worker = null; workerReady = processing = loading = false;
   if (!keepStream) { stream?.getTracks().forEach(track => track.stop()); stream = null; video.srcObject = null; }
   faces = []; hands = []; lastResult = 0; caster = receiver = null; cancelHold();
   faceSampleTime = mouseFaceSeenAt = null;
   handSeenAt = 0; trackingInfo = {}; manualTarget = mouseTrackedFace = null; lastTrackingText = ''; frameFailures = 0;
+  faceFrameFailures = 0;
+  handRate.reset(); faceRate.reset(); lastFaceFrame = 0; lastFaceVideoTime = -1;
   $('loading').hidden = true; $('stop-camera').hidden = true;
   $('loading').classList.remove('camera-live');
   $('live-status').hidden = true; $('target-auto').hidden = true;
@@ -306,6 +317,7 @@ function stopCamera(keepStream = false) {
 }
 function trackingFallback(message) {
   clearTimeout(initTimer); worker?.terminate(); worker = null; workerReady = processing = false;
+  stopCaptureLoop(); faceWorker?.terminate(); faceWorker = null; faceWorkerReady = faceProcessing = false;
   const reject = requestReject; requestReject = null;
   loading = false; $('loading').hidden = true;
   $('play-pair').disabled = $('play-solo').disabled = false;
@@ -337,7 +349,7 @@ async function startCamera(practice = false, input = 'hand', reuse = true) {
     initTimer = setTimeout(() => { if (id === session) { startSample('mouse'); notice('カメラの許可と接続を確認して、もう一度お試しください。', 8000); } }, 60000);
     if (!keepStream) {
       const deviceId = $('camera-device').value;
-      const media = await navigator.mediaDevices.getUserMedia({ audio: false, video: { width: { ideal: 1280 }, height: { ideal: 720 }, ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: $('facing').value } }) } });
+      const media = await navigator.mediaDevices.getUserMedia({ audio: false, video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60, max: 60 }, ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: $('facing').value } }) } });
       if (id !== session) { media.getTracks().forEach(track => track.stop()); return; }
       stream = media; video.srcObject = media;
     }
@@ -350,39 +362,53 @@ async function startCamera(practice = false, input = 'hand', reuse = true) {
     $('loading-detail').textContent = input === 'mouse' ? '映像を見ながら、先にマウスで投げられます。' : '映像は表示中です。「映像＋マウスで投げる」にも切り替えられます。';
     if (input === 'mouse') { mouseCameraRoles(); updateTrackingStatus(); }
     initTimer = setTimeout(() => { if (id === session) trackingFallback('認識の準備に時間がかかっています。映像を残してマウス操作に切り替えました。'); }, 45000);
-    worker = new Worker('./tracker-worker.js?v=20261025-face-easy');
+    worker = new Worker('./tracker-worker.js?v=20261025-recognition-fps');
+    if (input !== 'mouse') faceWorker = new Worker('./tracker-worker.js?v=20261025-recognition-fps');
     await new Promise((resolve, reject) => {
       requestReject = reject;
-      worker.onerror = () => {
-        if (id !== session) return;
-        trackingFallback('認識を起動できませんでした。映像を残してマウス操作に切り替えました。');
-      };
-      worker.onmessage = ({ data }) => {
-        if (id !== session) return;
-        if (data.type === 'ready') { workerReady = true; trackingInfo = data; requestReject = null; resolve(); }
-        else if (data.type === 'hands') { acceptTracking(data); }
-        else if (data.type === 'result') { processing = false; acceptTracking(data); }
-        else if (data.type === 'status') {
-          trackingInfo = data;
-          if (source === 'camera' && (data.handEngine === 'unavailable' || data.faceEngine === 'unavailable')) {
-            source = 'mouse-camera'; solo = false; resetRound(); mouseCameraRoles(); updateCameraLabels();
-            notice('手・顔の認識が止まったため、映像を残してマウス操作に切り替えました。', 8000);
+      const bindWorker = (task, secondary, faceOnly) => {
+        task.onerror = () => {
+          if (id === session) trackingFallback('認識を起動できませんでした。映像を残してマウス操作に切り替えました。');
+        };
+        task.onmessage = ({ data }) => {
+          if (id !== session || task !== (secondary ? faceWorker : worker)) return;
+          const result = inferenceMessage(data, faceOnly);
+          if (data.type === 'ready') {
+            if (secondary) faceWorkerReady = true; else workerReady = true;
+            trackingInfo = { ...trackingInfo, ...result };
+            if (workerReady && (!faceWorker || faceWorkerReady)) { requestReject = null; resolve(); }
+          } else if (data.type === 'hands') acceptTracking(result);
+          else if (data.type === 'result') {
+            if (secondary) faceProcessing = false; else processing = false;
+            acceptTracking(result);
+            // If a newer camera frame arrived during inference, submit it now
+            // instead of waiting for another rendered screen frame.
+            if (captureRunning) requestFrame(performance.now());
+          } else if (data.type === 'status') {
+            trackingInfo = { ...trackingInfo, ...result };
+            if (source === 'camera' && (result.handEngine === 'unavailable' || result.faceEngine === 'unavailable')) {
+              source = 'mouse-camera'; solo = false; resetRound(); mouseCameraRoles(); updateCameraLabels();
+              notice('手・顔の認識が止まったため、映像を残してマウス操作に切り替えました。', 8000);
+            }
+            updateTrackingStatus();
+          } else if (data.type === 'error') {
+            trackingFallback('認識が止まったため、映像を残してマウス操作に切り替えました。');
           }
-          updateTrackingStatus();
-        }
-        else if (data.type === 'error') {
-          processing = false;
-          trackingFallback('認識が止まったため、映像を残してマウス操作に切り替えました。');
-        }
+        };
       };
-      worker.postMessage({ type: 'init', detectHands: input !== 'mouse' });
+      bindWorker(worker, false, input === 'mouse');
+      if (faceWorker) bindWorker(faceWorker, true, true);
+      worker.postMessage({ type: 'init', detectHands: input !== 'mouse', detectFaces: input === 'mouse' });
+      faceWorker?.postMessage({ type: 'init', detectHands: false, detectFaces: true });
     });
     if (id !== session) return;
     finishLoading(); lastFrame = 0; lastVideoTime = -1;
+    trackingInfo.cameraFps = stream.getVideoTracks()[0].getSettings().frameRate;
     if (source === 'camera' && (trackingInfo.handEngine === 'unavailable' || trackingInfo.faceEngine === 'unavailable')) {
       source = 'mouse-camera'; solo = false; resetRound(); mouseCameraRoles(); updateCameraLabels();
       notice('手・顔の認識を準備できませんでした。映像を残してマウス操作に切り替えました。', 9000);
     }
+    startCaptureLoop();
     updateTrackingStatus();
   } catch (error) {
     if (id !== session) return;
@@ -393,28 +419,83 @@ async function startCamera(practice = false, input = 'hand', reuse = true) {
     notice(reasons[error.name] || `準備できませんでした：${error.message}`, 8000);
   }
 }
-async function requestFrame(time) {
-  if (processing && time - lastFrame > 8000) { trackingFallback('認識の応答が止まりました。映像を残してマウス操作に切り替えました。'); return; }
-  if (!workerReady || processing || video.readyState < 2 || document.hidden || time - lastFrame < 16 || video.currentTime === lastVideoTime) return;
-  const id = session; processing = true; lastFrame = time; lastVideoTime = video.currentTime;
+function inferenceMessage(data, faceOnly) {
+  // Dedicated workers report their unused model as disabled. Never let that
+  // overwrite the other worker's engine, timings, or current observations.
+  if (faceOnly) {
+    const { handEngine, handError, handWarning, handMs, hands, worldHands, handedness, gestures, ...result } = data;
+    return result;
+  }
+  const { faceEngine, faceError, faceMs, faceTime, facesUpdated, faces, matrices, ...result } = data;
+  return result;
+}
+function stopCaptureLoop() {
+  captureRunning = false;
+  if (captureCallback !== null) {
+    if (captureUsesVideo) video.cancelVideoFrameCallback?.(captureCallback);
+    else cancelAnimationFrame(captureCallback);
+  }
+  captureCallback = null; cameraFrameToken = null; captureHiddenAt = null;
+}
+function startCaptureLoop() {
+  stopCaptureLoop(); captureRunning = true;
+  const id = session;
+  captureUsesVideo = typeof video.requestVideoFrameCallback === 'function';
+  const tick = (time, metadata) => {
+    if (id !== session || !captureRunning) return;
+    captureCallback = null;
+    if (captureUsesVideo) cameraFrameToken = metadata.presentedFrames ?? metadata.mediaTime;
+    requestFrame(performance.now());
+    schedule();
+  };
+  const schedule = () => {
+    if (id !== session || !captureRunning) return;
+    captureCallback = captureUsesVideo ? video.requestVideoFrameCallback(tick) : requestAnimationFrame(tick);
+  };
+  schedule();
+}
+async function captureInferenceFrame(task, time, token, secondary, detectHands) {
+  const id = session;
+  if (secondary) { faceProcessing = true; lastFaceFrame = time; lastFaceVideoTime = token; }
+  else { processing = true; lastFrame = time; lastVideoTime = token; }
   try {
-    // Automatic render upgrades must not increase inference work on a worker
-    // that may still be slow. High-detail input is an explicit operator choice.
+    // Preserve small-hand detail: faster inference must not depend on making
+    // distant fingers harder to see. Capture never queues stale video frames.
     const inputSize = trackingTuning.quality === 'high' ? 960 : 768;
     const scale = Math.min(inputSize / video.videoWidth, inputSize / video.videoHeight, 1);
     const bitmap = await createImageBitmap(video, { resizeWidth: Math.round(video.videoWidth * scale), resizeHeight: Math.round(video.videoHeight * scale) });
-    if (id !== session || !worker) { bitmap.close(); return; }
-    const detectHands = source === 'camera' && (carving || phase !== 'worn' || $('throw-result').hidden || !!debugControls?.isOpen());
-    if (!detectHands && source === 'camera') { hands = []; controlHand = null; }
-    worker.postMessage({ type: 'frame', bitmap, time, detectHands,
-      faceIntervalMs: detectHands ? trackingTuning.quality === 'high' ? 160 : 240 : 100 }, [bitmap]);
-    frameFailures = 0;
+    if (id !== session || task !== (secondary ? faceWorker : worker)) { bitmap.close(); return; }
+    try { task.postMessage({ type: 'frame', bitmap, time, detectHands, faceIntervalMs: 100 }, [bitmap]); }
+    catch (error) { bitmap.close(); throw error; }
+    if (secondary) faceFrameFailures = 0; else frameFailures = 0;
   } catch {
-    if (id === session) {
-      processing = false;
-      if (++frameFailures >= 3) trackingFallback('映像を認識処理に渡せませんでした。映像を残してマウス操作に切り替えました。');
+    if (id === session && task === (secondary ? faceWorker : worker)) {
+      if (secondary) faceProcessing = false; else processing = false;
+      const failures = secondary ? ++faceFrameFailures : ++frameFailures;
+      if (failures >= 3) trackingFallback('映像を認識処理に渡せませんでした。映像を残してマウス操作に切り替えました。');
     }
   }
+}
+async function requestFrame(time) {
+  if (video.readyState < 2 || document.hidden) return;
+  if (processing && time - lastFrame > 8000 || faceProcessing && time - lastFaceFrame > 8000) {
+    trackingFallback('認識の応答が止まりました。映像を残してマウス操作に切り替えました。'); return;
+  }
+  if (captureRunning && captureUsesVideo && cameraFrameToken === null) return;
+  const token = captureRunning && captureUsesVideo ? cameraFrameToken : video.currentTime;
+  const detectHands = source === 'camera' && (carving || phase !== 'worn' || $('throw-result').hidden || !!debugControls?.isOpen());
+  if (!detectHands && source === 'camera') { hands = []; controlHand = null; }
+  const pending = [];
+  // With two workers, the hand lane is independent of face processing. In
+  // mouse mode there is only a face worker, paced to ten updates per second.
+  if (workerReady && !processing && token !== lastVideoTime && (!faceWorker || detectHands)
+    && (detectHands || time - lastFrame >= 100)) {
+    pending.push(captureInferenceFrame(worker, time, token, false, detectHands));
+  }
+  if (faceWorkerReady && !faceProcessing && token !== lastFaceVideoTime && time - lastFaceFrame >= 100) {
+    pending.push(captureInferenceFrame(faceWorker, time, token, true, false));
+  }
+  await Promise.all(pending);
 }
 function acceptTracking(data) {
   const now = performance.now(), time = data.time ?? now, elapsed = lastResult ? now - lastResult : 0;
@@ -423,8 +504,10 @@ function acceptTracking(data) {
   trackingInfo = { ...trackingInfo, ...data };
   if (hasHands) {
     trackingInfo.handLatencyMs = Math.max(0, Math.round(now - time));
-    if (elapsed > 0) trackingInfo.handFps = Math.round(1000 / elapsed);
+    trackingInfo.lastHandCompletedAt = now;
+    handRate.record(now); trackingInfo.handFps = handRate.fps;
   }
+  if (facesUpdated) { trackingInfo.lastFaceCompletedAt = now; faceRate.record(now); trackingInfo.faceFps = faceRate.fps; }
   if (facesUpdated && Number.isFinite(data.faceMs)) trackingInfo.lastFaceMs = data.faceMs;
   if (facesUpdated) {
     faceSampleTime = Number.isFinite(data.faceTime) ? data.faceTime : time;
@@ -538,7 +621,7 @@ function acceptTracking(data) {
       if (!toss.move(point, time)) toss.begin(point, time);
     }
     else {
-      if (confidentOpen && candidate.ok && candidate.fast) {
+      if ((confidentOpen || trackingInfo.handEngine === 'hand-landmarker') && candidate.ok && candidate.fast) {
         rememberThrowCheck(candidate);
         const from = displayHeldPose(now);
         toss.release(point, time, targetNow); pendingRelease = null;
@@ -649,7 +732,17 @@ canvas.addEventListener('pointerup', event => {
 });
 canvas.addEventListener('pointercancel', () => { pointer = null; cancelHold(); });
 window.addEventListener('blur', () => { pointer = null; cancelHold(); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) { cancelHold(); lastResult = 0; } });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { captureHiddenAt = performance.now(); cancelHold(); lastResult = 0; }
+  else if (captureHiddenAt !== null) {
+    // Background throttling is not a detector stall. Resume the remaining
+    // timeout budget without changing any captured observation timestamp.
+    const paused = performance.now() - captureHiddenAt;
+    if (processing) lastFrame += paused;
+    if (faceProcessing) lastFaceFrame += paused;
+    captureHiddenAt = null;
+  }
+});
 window.addEventListener('pagehide', () => stopCamera());
 
 function roundRect(x, y, w, h, r, fill, stroke) {
@@ -780,7 +873,7 @@ function renderScene(time) {
   if (cameraActive()) { c.fillStyle = '#17121e'; c.fillRect(0, 0, W, H); }
   else if (!carving) background(time);
   if (cameraActive()) {
-    drawCamera(); requestFrame(time);
+    drawCamera();
     expireTracking(time);
     if (source === 'mouse-camera') mouseCameraRoles();
     if (solo && !carving) person(sampleFace('right'), false, time);
