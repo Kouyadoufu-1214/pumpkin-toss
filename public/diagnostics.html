@@ -12,7 +12,7 @@
 const button = document.getElementById('run'), result = document.getElementById('result');
 button.addEventListener('click', () => {
   button.disabled = true; result.textContent = 'モデルを読み込み中…';
-  const worker = new Worker('./tracker-worker.js?v=20261024-gesture');
+  const worker = new Worker('./tracker-worker.js?v=20261025-recognition');
   let state;
   const names = { 'face-landmarker':'顔検出', 'gesture-recognizer':'グー／パー＋手の検出', 'hand-landmarker':'手の検出（代替モデル）', unavailable:'利用不可', disabled:'省略（マウス用）' };
   const description = data => `顔: ${names[data.faceEngine] || data.faceEngine}\n手: ${names[data.handEngine] || data.handEngine}`;

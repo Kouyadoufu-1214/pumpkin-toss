@@ -3,8 +3,8 @@ import { clamp, distance } from './interaction.mjs';
 // Zones are in mirrored screen coordinates; a single face is never its own receiver.
 export function resolveRoles(faces, { width = 1280, swapped = false, solo = false } = {}) {
   if (solo) return { caster: [...faces].sort((a, b) => a.x - b.x)[0] || null, receiver: null };
-  const left = faces.filter(f => f.x < width * .45).sort((a, b) => a.x - b.x)[0] || null;
-  const right = faces.filter(f => f.x > width * .55).sort((a, b) => b.x - a.x)[0] || null;
+  const left = faces.filter(f => f.x < width * .5).sort((a, b) => a.x - b.x)[0] || null;
+  const right = faces.filter(f => f.x > width * .5).sort((a, b) => b.x - a.x)[0] || null;
   return swapped ? { caster: right, receiver: left } : { caster: left, receiver: right };
 }
 
@@ -19,26 +19,57 @@ function rememberControlHand(hand, hands) {
   return hand;
 }
 
-export function handGrip(points, previous = false, gesture = null) {
+export function handGrip(points, previous = false, gesture = null, worldPoints = null) {
   if (points?.length !== 21 || !points.every(finitePoint)) return false;
-  const palm = distance(points[5], points[17]);
-  if (palm < .01) return false;
-  const pinchRatio = distance(points[4], points[8]) / palm;
+  // World landmarks use the same metric on every axis, so a fist turned toward
+  // the camera does not become an apparently straight finger in projection.
+  const spatial = worldPoints?.length === 21 && worldPoints.every(point => finitePoint(point) && Number.isFinite(point.z));
+  const shape = spatial ? worldPoints : points;
+  const delta = (a, b) => [a.x - b.x, a.y - b.y, spatial ? a.z - b.z : 0];
+  const length = vector => Math.hypot(...vector);
+  const span = (a, b) => length(delta(a, b));
+  const cosine = (a, b) => {
+    const denominator = length(a) * length(b);
+    return denominator > 1e-12 ? a.reduce((sum, value, index) => sum + value * b[index], 0) / denominator : 1;
+  };
+  // Across-palm width collapses for an edge-on hand. Wrist-to-knuckle length
+  // supplies a second scale without depending on screen pixels or distance.
+  const palm = Math.max(span(shape[5], shape[17]), span(shape[0], shape[9]) * .65,
+    (span(shape[0], shape[5]) + span(shape[0], shape[17])) * .325);
+  if (palm < 1e-6) return false;
+  const pinchRatio = span(shape[4], shape[8]) / palm;
   // A deliberate pinch remains available even when the other three fingers
   // resemble an open palm. Confident classifications handle tilted fists and
   // open hands better than distances projected onto the camera image alone.
   if (pinchRatio < .46) return true;
-  if (Number.isFinite(gesture?.score) && gesture.score >= .7 && gesture.score <= 1) {
+  const validScore = Number.isFinite(gesture?.score) && gesture.score >= 0 && gesture.score <= 1;
+  if (validScore && gesture.score >= .7) {
     if (gesture.categoryName === 'Closed_Fist') return true;
     if (gesture.categoryName === 'Open_Palm') return false;
   }
   const pinched = pinchRatio < (previous ? .7 : .46);
-  const folded = [[8, 6], [12, 10], [16, 14], [20, 18]].filter(([tip, pip]) =>
-    distance(points[tip], points[0]) < distance(points[pip], points[0]) * (previous ? 1.2 : 1.08)).length;
-  return pinched || folded >= (previous ? 2 : 3);
+  let folded = 0, extended = 0;
+  for (const base of [5, 9, 13, 17]) {
+    const knuckle = shape[base], pip = shape[base + 1], dip = shape[base + 2], tip = shape[base + 3];
+    const segments = [delta(pip, knuckle), delta(dip, pip), delta(tip, dip)];
+    const lengths = segments.map(length);
+    const usable = lengths.every(value => value > palm * .03);
+    const reach = usable ? span(tip, knuckle) / lengths.reduce((sum, value) => sum + value, 0) : 1;
+    const bend = usable ? Math.min(cosine(segments[0], segments[1]), cosine(segments[1], segments[2])) : 1;
+    const straight = usable && reach > .88 && bend > .7;
+    if (straight) extended++;
+    const towardWrist = span(tip, shape[0]) < span(pip, shape[0]) * (previous ? 1.2 : 1.08);
+    const curled = usable && reach < (previous ? .86 : .8) && bend < .55;
+    if (!straight && (towardWrist || curled)) folded++;
+  }
+  // A moderate classifier score needs geometric support. It can resolve two
+  // visibly bent fingers; an open hand with a noisy label cannot start a grip.
+  const possibleFist = validScore && gesture.categoryName === 'Closed_Fist' && gesture.score >= .45;
+  return pinched || folded >= (previous || possibleFist ? 2 : 3)
+    || (previous && possibleFist && gesture.score >= .55 && folded >= 1 && extended < 2);
 }
 
-export function chooseControlHand(hands, previous, { width = 1280, swapped = false, solo = false, elapsed = 80, anchor = null } = {}) {
+export function chooseControlHand(hands, previous, { width = 1280, swapped = false, solo = false, elapsed = 80, anchor = null, preferGrip = false } = {}) {
   const valid = hands.filter(hand => finitePoint(hand.palm) && finitePoint(hand.wrist));
   if (previous) {
     if (!finitePoint(previous.wrist) || !Number.isFinite(elapsed) || elapsed > MAX_SAMPLE_GAP) return null;
@@ -46,18 +77,36 @@ export function chooseControlHand(hands, previous, { width = 1280, swapped = fal
     // Keep the expansion bounded so a distant receiver's hand is not adopted.
     const reach = clamp(Math.max(0, elapsed) * 1.3, 190, 360);
     const others = otherHandSnapshots.get(previous) || [];
-    const selected = valid.filter(hand => {
-      const moved = distance(hand.wrist, previous.wrist);
-      if ((hand.label && previous.label && hand.label !== previous.label) || moved >= reach) return false;
-      // Left/Right labels identify hands, not people. Do not adopt a hand
-      // that is clearly closer to another hand already seen in the last frame.
-      return !others.some(other => (!hand.label || !other.label || hand.label === other.label)
-        && distance(hand.wrist, other.wrist) + 35 < moved);
-    }).sort((a, b) => distance(a.wrist, previous.wrist) - distance(b.wrist, previous.wrist))[0] || null;
-    return rememberControlHand(selected, valid);
+    // Left/Right labels identify hands, not people. Match all known hands
+    // together so a visible peer is reserved for its own nearest track.
+    const tracks = [previous, ...others], edges = [];
+    for (const [trackIndex, track] of tracks.entries()) {
+      for (const [handIndex, hand] of valid.entries()) {
+        if (hand.label && track.label && hand.label !== track.label) continue;
+        const moved = distance(hand.wrist, track.wrist);
+        if (moved < reach) edges.push({ trackIndex, handIndex, moved });
+      }
+    }
+    edges.sort((a, b) => a.moved - b.moved || b.trackIndex - a.trackIndex);
+    const matched = new Map(), used = new Set();
+    for (const edge of edges) {
+      if (matched.has(edge.trackIndex) || used.has(edge.handIndex)) continue;
+      matched.set(edge.trackIndex, valid[edge.handIndex]); used.add(edge.handIndex);
+    }
+    const selected = matched.get(0);
+    if (selected) return rememberControlHand(selected, valid);
+    // A held hand can be absent for several results. Keep following known
+    // peers during that gap rather than letting their stale positions make
+    // a gradually approaching peer look like the missing held hand.
+    otherHandSnapshots.set(previous, others.map((other, index) => {
+      const current = matched.get(index + 1);
+      return current ? { wrist: { ...current.wrist }, label: current.label } : other;
+    }));
+    return null;
   }
-  const selected = valid.filter(h => solo || (swapped ? h.palm.x > width * .52 : h.palm.x < width * .48))
-    .sort((a, b) => (finitePoint(anchor) ? distance(a.palm, anchor) - distance(b.palm, anchor) : 0)
+  const selected = valid.filter(h => solo || (swapped ? h.palm.x > width * .5 : h.palm.x < width * .5))
+    .sort((a, b) => (preferGrip ? Number(handGrip(b.points, false, b.gesture, b.worldPoints)) - Number(handGrip(a.points, false, a.gesture, a.worldPoints)) : 0)
+      || (finitePoint(anchor) ? distance(a.palm, anchor) - distance(b.palm, anchor) : 0)
       || (swapped ? b.palm.x - a.palm.x : a.palm.x - b.palm.x))[0] || null;
   return rememberControlHand(selected, valid);
 }

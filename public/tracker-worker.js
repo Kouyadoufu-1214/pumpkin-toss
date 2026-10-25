@@ -32,7 +32,8 @@ async function initialize({ detectHands = true, numHands = 4 }) {
   try {
     faceTask = await self.exports.FaceLandmarker.createFromOptions(files, {
       baseOptions: { modelAssetPath: asset('face_landmarker.task'), delegate: 'CPU' },
-      runningMode: 'VIDEO', numFaces: 2, minFaceDetectionConfidence: 0.55, minTrackingConfidence: 0.5,
+      runningMode: 'VIDEO', numFaces: 2,
+      minFaceDetectionConfidence: 0.4, minFacePresenceConfidence: 0.4, minTrackingConfidence: 0.4,
       outputFacialTransformationMatrixes: true,
     });
     faceEngine = 'face-landmarker';
@@ -43,14 +44,14 @@ async function initialize({ detectHands = true, numHands = 4 }) {
     // throwing hand. Mouse mode skips this task completely to reduce CPU use.
     const handOptions = {
       runningMode: 'VIDEO', numHands: Math.max(1, Math.min(4, Number(numHands) || 4)),
-      minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+      minHandDetectionConfidence: 0.4, minHandPresenceConfidence: 0.4, minTrackingConfidence: 0.4,
     };
     try {
       handTask = await self.exports.GestureRecognizer.createFromOptions(files, {
         ...handOptions,
         baseOptions: { modelAssetPath: asset('gesture_recognizer.task'), delegate: 'CPU' },
         cannedGesturesClassifierOptions: {
-          categoryAllowlist: ['Closed_Fist', 'Open_Palm'], scoreThreshold: 0.5,
+          categoryAllowlist: ['Closed_Fist', 'Open_Palm'], scoreThreshold: 0.45,
         },
       });
       handEngine = 'gesture-recognizer';
@@ -76,7 +77,7 @@ self.onmessage = async ({ data }) => {
     return;
   }
   if (data.type === 'frame') {
-    let faces = [], matrices = [], hands = [], handedness = [], gestures = [];
+    let faces = [], matrices = [], hands = [], worldHands = [], handedness = [], gestures = [];
     let statusChanged = false;
     try {
       if (faceTask) {
@@ -93,7 +94,7 @@ self.onmessage = async ({ data }) => {
           const result = handEngine === 'gesture-recognizer'
             ? handTask.recognizeForVideo(data.bitmap, data.time)
             : handTask.detectForVideo(data.bitmap, data.time);
-          hands = result.landmarks; handedness = result.handedness;
+          hands = result.landmarks; worldHands = result.worldLandmarks || []; handedness = result.handedness;
           gestures = result.gestures || [];
         } catch (error) {
           handError = String(error); handEngine = 'unavailable';
@@ -101,7 +102,7 @@ self.onmessage = async ({ data }) => {
         }
       }
       if (statusChanged) self.postMessage({ type: 'status', ...status() });
-      self.postMessage({ type: 'result', faces, matrices, hands, handedness, gestures, time: data.time, ...status() });
+      self.postMessage({ type: 'result', faces, matrices, hands, worldHands, handedness, gestures, time: data.time, ...status() });
     } finally { data.bitmap.close(); }
   }
 };

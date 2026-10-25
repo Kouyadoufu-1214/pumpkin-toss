@@ -33,7 +33,8 @@ function resultHarness(overrides = {}) {
     source: 'mouse', phase: 'worn', carving: false, loading: false,
     wornSince: 1000, receiver: { x: 900, y: 280 },
     heldPose: {}, flight: {}, smoothTarget: {}, mouseTrackedFace: {}, controlHand: {},
-    gripped: true, pinched: true, pointer: 1, roleSince: 500,
+    gripped: true, pinched: true, pointer: 1,
+    rememberedRoles: { caster: {}, receiver: {} }, pendingRelease: {},
     dwell: { reset() { calls.dwell++; } },
     toss: { cancel() { calls.toss++; } },
     art: { cancel() { calls.art++; } },
@@ -130,12 +131,14 @@ test('reset hides the result and clears the round, then a later completed throw 
     assert.equal(h.element('throw-result').hidden, true);
     assert.equal(h.classes.has('throw-complete'), false);
     assert.equal(h.element('restart').hidden, true);
-    assert.equal(h.context.phase, source === 'camera' ? 'waiting' : 'ready');
+    assert.equal(h.context.phase, 'ready');
     assert.equal(h.document.activeElement, h.element('cue-title'));
     for (const key of ['heldPose', 'flight', 'smoothTarget', 'mouseTrackedFace', 'controlHand', 'pointer']) assert.equal(h.context[key], null, key);
     assert.equal(h.context.gripped, false);
     assert.equal(h.context.pinched, false);
-    assert.equal(h.context.roleSince, 0);
+    assert.equal(h.context.rememberedRoles.caster, null);
+    assert.equal(h.context.rememberedRoles.receiver, null);
+    assert.equal(h.context.pendingRelease, null);
     assert.equal(h.calls.toss, 1);
     assert.equal(h.calls.art, 1);
     h.update(10000);
