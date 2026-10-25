@@ -230,6 +230,25 @@ test('ready mode can prefer a fist over a nearer open hand without changing held
   assert.equal(chooseControlHand([fist, receiverFist, nextOpen], open, { anchor, preferGrip: true }), nextOpen,
     'grip preference applies only to initial acquisition, never a held-hand switch');
 });
+test('grip calibration affects initial hand preference without overriding side or held-hand identity', () => {
+  const hand = (x, categoryName = 'Open_Palm') => {
+    // A partly visible/ambiguous fist has little useful bend information and
+    // needs its classifier score to clear the selected confidence threshold.
+    const worldPoints = anatomicalHand({ folded: 0 });
+    return { palm: { x, y: 450 }, wrist: { x, y: 480 }, label: 'Left',
+      points: projectHand(worldPoints), worldPoints, gesture: { categoryName, score: .6 } };
+  };
+  const open = hand(490), ambiguousFist = hand(300, 'Closed_Fist'), otherSide = hand(740, 'Closed_Fist');
+  const hands = [open, otherSide, ambiguousFist], base = { preferGrip: true, anchor: { x: 500, y: 450 } };
+  assert.equal(chooseControlHand(hands, null, base), open, 'the default confidence rejects the ambiguous classifier');
+  assert.equal(chooseControlHand(hands, null, { ...base, gripOptions: { confidence: .6 } }), ambiguousFist);
+  assert.equal(chooseControlHand(hands, null, { ...base, gripOptions: { confidence: .61 } }), open);
+  assert.equal(chooseControlHand([open, otherSide], null, { ...base, gripOptions: { confidence: .6 } }), open,
+    'even a confident fist cannot be acquired from the receiver side');
+  const nextOpen = hand(520);
+  assert.equal(chooseControlHand([ambiguousFist, otherSide, nextOpen], open, { ...base, gripOptions: { confidence: .6 } }), nextOpen,
+    'calibration cannot switch an already held hand to another fist');
+});
 test('only a deliberate throw toward an existing receiver launches', () => {
   const attempt = (end, target, time = 200) => { const g = new TossGesture(); g.begin({ x: 350, y: 450 }, 0); return g.release(end, time, target); };
   assert.equal(attempt({ x: 480, y: 410 }, { x: 1000 }).ok, true);
@@ -500,4 +519,122 @@ test('changing the grip at a stationary position never supplies a throw impulse'
   toss.begin(point, 1000); toss.move(point, 1250);
   assert.equal(handGrip(projectHand(open), true, null, open), false);
   assert.equal(toss.release(point, 1500, { x: 950 }).ok, false);
+});
+
+test('throw calibration can accept a shorter or slower deliberate motion while unconfigured defaults stay unchanged', () => {
+  const attempt = (settings, point, time) => {
+    const gesture = new TossGesture();
+    if (settings) gesture.configure(settings);
+    gesture.begin({ x: 350, y: 450 }, 1000);
+    return gesture.previewRelease(point, 1000 + time, { x: 1000 });
+  };
+  assert.equal(attempt(null, { x: 395, y: 450 }, 250).ok, false, 'the historical 200 px/s default is retained');
+  assert.equal(attempt({ minSpeed: 160 }, { x: 395, y: 450 }, 250).ok, true);
+  assert.equal(attempt({ minSpeed: 190 }, { x: 395, y: 450 }, 250).ok, false);
+  assert.equal(attempt(null, { x: 382, y: 450 }, 160).ok, false, 'the historical 40 px default is retained');
+  assert.equal(attempt({ minDistance: 32 }, { x: 382, y: 450 }, 160).ok, true);
+  assert.equal(attempt({ minDistance: 33 }, { x: 382, y: 450 }, 160).ok, false);
+});
+
+test('throw configuration validates limits and keeps earlier valid values when an update is incomplete or invalid', () => {
+  const gesture = new TossGesture();
+  assert.equal(gesture.configure({ minSpeed: 0, minDistance: 999 }), gesture);
+  assert.deepEqual(gesture.settings, { minSpeed: 80, minDistance: 160 });
+  gesture.configure({ minSpeed: 1000, minDistance: -20 });
+  assert.deepEqual(gesture.settings, { minSpeed: 600, minDistance: 20 });
+  for (const invalid of [undefined, null, { minSpeed: NaN, minDistance: Infinity }, { minSpeed: '80', minDistance: null }]) {
+    gesture.configure(invalid);
+    assert.deepEqual(gesture.settings, { minSpeed: 600, minDistance: 20 });
+  }
+  gesture.configure({ minSpeed: 160 });
+  assert.deepEqual(gesture.settings, { minSpeed: 160, minDistance: 20 });
+});
+
+test('diagnostics use the configured release evidence without consuming or rewriting the active hold', () => {
+  for (const direction of [1, -1]) {
+    const gesture = new TossGesture().configure({ minSpeed: 160, minDistance: 32 });
+    const start = { x: 500, y: 450 }, point = { x: 500 + direction * 32, y: 450 }, target = { x: 500 + direction * 400 };
+    gesture.begin(start, 1000);
+    const before = structuredClone(gesture);
+    const expected = { ok: true, reason: 'ready', fast: false, speed: 200, travel: 32, distance: 32, duration: 160, gap: 160 };
+    assert.deepEqual(gesture.diagnostics(point, 1160, target), expected);
+    assert.deepEqual(gesture.diagnostics(point, 1160, target), expected, 'polling the developer overlay is harmless');
+    assert.deepEqual(structuredClone(gesture), before);
+    const preview = gesture.previewRelease(point, 1160, target);
+    assert.deepEqual(preview, { ok: true, fast: false });
+    assert.deepEqual(structuredClone(gesture), before);
+    assert.deepEqual(gesture.release(point, 1160, target), preview, 'preview and actual release use the same calibration');
+    assert.equal(gesture.active, false);
+  }
+});
+
+test('diagnostics report forward speed separately from total duration and the latest camera gap', () => {
+  const gesture = new TossGesture();
+  gesture.begin({ x: 350, y: 450 }, 1000);
+  gesture.move({ x: 390, y: 450 }, 1040);
+  const diagnostic = gesture.diagnostics({ x: 710, y: 450 }, 1120, { x: 1000 });
+  assert.deepEqual(diagnostic, { ok: true, reason: 'ready', fast: true, speed: 4000, travel: 360, distance: 360, duration: 120, gap: 80 });
+  assert.deepEqual(gesture.previewRelease({ x: 710, y: 450 }, 1120, { x: 1000 }), { ok: true, fast: true });
+});
+
+test('the most permissive calibration still rejects no motion, reversal, vertical movement and lost tracking', () => {
+  const settings = { minSpeed: 80, minDistance: 20 };
+  const cases = [
+    [{ x: 350, y: 450 }, 200, { x: 1000 }, 'direction'],
+    [{ x: 350, y: 200 }, 200, { x: 1000 }, 'direction'],
+    [{ x: 250, y: 450 }, 200, { x: 1000 }, 'direction'],
+    [{ x: 600, y: 450 }, 651, { x: 1000 }, 'slow'],
+    [{ x: 600, y: 450 }, 200, null, 'no-receiver'],
+    [{ x: NaN, y: 450 }, 200, { x: 1000 }, 'cancelled'],
+    [{ x: 600, y: 450 }, -1, { x: 1000 }, 'cancelled'],
+  ];
+  for (const [point, duration, target, reason] of cases) {
+    const gesture = new TossGesture().configure(settings);
+    gesture.begin({ x: 350, y: 450 }, 1000);
+    const before = structuredClone(gesture), diagnostic = gesture.diagnostics(point, 1000 + duration, target);
+    assert.equal(diagnostic.ok, false); assert.equal(diagnostic.reason, reason); assert.equal(diagnostic.fast, false);
+    for (const key of ['speed', 'travel', 'distance', 'duration', 'gap']) assert.equal(Number.isFinite(diagnostic[key]), true);
+    assert.deepEqual(structuredClone(gesture), before);
+    assert.deepEqual(gesture.release(point, 1000 + duration, target), { ok: false, reason });
+  }
+  const reversed = new TossGesture().configure(settings);
+  reversed.begin({ x: 350, y: 450 }, 0); reversed.move({ x: 550, y: 450 }, 100);
+  assert.equal(reversed.diagnostics({ x: 450, y: 450 }, 200, { x: 1000 }).reason, 'direction');
+  assert.deepEqual(new TossGesture().diagnostics({ x: 400, y: 450 }, 100, { x: 1000 }),
+    { ok: false, reason: 'cancelled', fast: false, speed: 0, travel: 0, distance: 0, duration: 0, gap: 0 });
+});
+
+test('diagnostics distinguish the distance threshold from signed forward travel for diagonal or reversed motion', () => {
+  for (const direction of [1, -1]) {
+    const gesture = new TossGesture().configure({ minSpeed: 160, minDistance: 32 });
+    gesture.begin({ x: 500, y: 450 }, 1000);
+    const point = { x: 500 + 30 * direction, y: 480 }, target = { x: 500 + 400 * direction };
+    const diagnostic = gesture.diagnostics(point, 1150, target);
+    assert.equal(diagnostic.ok, true);
+    assert.equal(diagnostic.travel, 30);
+    assert.equal(diagnostic.distance, Math.hypot(30, 30));
+    assert.ok(diagnostic.distance >= gesture.settings.minDistance,
+      'the developer comparison uses the same Euclidean distance as the release gate');
+    const reversed = gesture.diagnostics({ x: 500 - 30 * direction, y: 480 }, 1150, target);
+    assert.equal(reversed.ok, false); assert.equal(reversed.reason, 'direction');
+    assert.equal(reversed.travel, -30); assert.equal(reversed.distance, diagnostic.distance);
+    assert.equal(gesture.diagnostics({ x: NaN, y: 480 }, 1150, target).distance, 0);
+  }
+});
+
+test('grip confidence is adjustable while invalid scores, geometry fallback and deliberate pinching stay guarded', () => {
+  const open = anatomicalHand({ folded: 0 }), fist = anatomicalHand(), projected = projectHand(open);
+  const classifier = { categoryName: 'Closed_Fist', score: .65 };
+  assert.equal(handGrip(projected, false, classifier, open), false);
+  assert.equal(handGrip(projected, false, classifier, open, { confidence: .65 }), true);
+  assert.equal(handGrip(projected, false, classifier, open, { confidence: .66 }), false);
+  for (const confidence of [NaN, Infinity, '0', null]) {
+    assert.equal(handGrip(projected, false, classifier, open, { confidence }), false);
+  }
+  assert.equal(handGrip(projected, false, { ...classifier, score: .49 }, open, { confidence: 0 }), false,
+    'the lower confidence bound cannot accept arbitrary low scores');
+  assert.equal(handGrip(projected, false, { ...classifier, score: 1.1 }, open, { confidence: .5 }), false);
+  assert.equal(handGrip(projectHand(fist), true, { categoryName: 'Open_Palm', score: .65 }, fist), true);
+  assert.equal(handGrip(projectHand(fist), true, { categoryName: 'Open_Palm', score: .65 }, fist, { confidence: .65 }), false);
+  assert.equal(handGrip(projectHand(fist), false, null, fist, { confidence: .95 }), true, 'geometry remains available at any setting');
 });

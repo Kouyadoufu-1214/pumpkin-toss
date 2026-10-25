@@ -82,8 +82,11 @@ self.onmessage = async ({ data }) => {
   if (data.type === 'frame') {
     let faces = [], matrices = [], hands = [], worldHands = [], handedness = [], gestures = [];
     let statusChanged = false, facesUpdated = false, handMs = 0, faceMs = 0;
+    const detectHands = !!handTask && data.detectHands !== false;
+    const faceInterval = Number.isFinite(data.faceIntervalMs) ? Math.max(80, Math.min(500, data.faceIntervalMs))
+      : detectHands ? FACE_INTERVAL_WITH_HANDS : 0;
     try {
-      if (handTask) {
+      if (detectHands) {
         const started = performance.now();
         try {
           const result = handEngine === 'gesture-recognizer'
@@ -100,7 +103,7 @@ self.onmessage = async ({ data }) => {
         // faces. The final result, not this message, releases the frame slot.
         self.postMessage({ type: 'hands', hands, worldHands, handedness, gestures, time: data.time, handMs, ...status() });
       }
-      if (faceTask && (!handTask || faceTime === null || data.time - faceTime >= FACE_INTERVAL_WITH_HANDS)) {
+      if (faceTask && (faceTime === null || data.time - faceTime >= faceInterval)) {
         const started = performance.now();
         facesUpdated = true; faceTime = data.time;
         try {

@@ -62,7 +62,7 @@ function renderHarness() {
   const calls = { render: 0, copy: 0 };
   let lost = false;
   const pumpkin = Object.assign(Object.create(Pumpkin3D.prototype), {
-    disposed: false, renderError: null, wallsDirty: false,
+    disposed: false, renderError: null, wallsDirty: false, width: 1280, height: 720,
     inside: { material: {} }, place() {},
     renderer: {
       getContext: () => ({ isContextLost: () => lost }),
@@ -108,6 +108,32 @@ test('unexpected renderer exceptions remain observable by the application fallba
   h.pumpkin.renderer.render = () => { throw new Error('GPU unavailable'); };
   assert.throws(h.draw, /GPU unavailable/);
   assert.equal(h.calls.copy, 0);
+});
+
+test('light quality reduces only the WebGL buffer and avoids resizing it every frame', () => {
+  const pumpkin = fittingHarness(), sizes = [];
+  pumpkin.renderer = { setSize: (...args) => sizes.push(args) };
+  const projection = pumpkin.camera.projectionMatrix.toArray();
+  assert.equal(pumpkin.setQuality('light'), true);
+  assert.deepEqual(sizes, [[832, 468, false]]);
+  assert.equal(pumpkin.setQuality('light'), false);
+  assert.equal(sizes.length, 1);
+  assert.deepEqual([pumpkin.width, pumpkin.height], [1280, 720]);
+  assert.deepEqual(pumpkin.camera.projectionMatrix.toArray(), projection);
+  assert.equal(pumpkin.setQuality('high'), true);
+  assert.deepEqual(sizes[1], [1280, 720, false]);
+  assert.throws(() => pumpkin.setQuality('invalid'), RangeError);
+  assert.equal(pumpkin.quality, 'high');
+  pumpkin.geometry.dispose();
+});
+
+test('each render immediately copies its reduced buffer to the full logical canvas', () => {
+  const h = renderHarness(), events = [];
+  h.pumpkin.renderer.domElement = { width: 832, height: 468 };
+  h.pumpkin.renderer.render = () => events.push('render');
+  const context = { drawImage: (...args) => events.push(args) };
+  assert.equal(h.pumpkin.draw(context, {}), true);
+  assert.deepEqual(events, ['render', [h.pumpkin.renderer.domElement, 0, 0, 1280, 720]]);
 });
 
 function fittingHarness(geometry = createPumpkinGeometry(), width = 1280, height = 720) {
@@ -164,6 +190,23 @@ function assertFaceFit(pumpkin, face, options = {}) {
   assert.ok(Math.abs(box.y) < Math.max(1, h * .01), `vertical center ${box.y}`);
   return { pose, box };
 }
+
+test('changing buffer quality preserves face fitting and carving ray positions', () => {
+  const pumpkin = fittingHarness();
+  pumpkin.renderer = { setSize() {} };
+  pumpkin.shell = new THREE.Mesh(pumpkin.geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+  pumpkin.root.add(pumpkin.shell);
+  pumpkin.raycaster = new THREE.Raycaster(); pumpkin.localPoint = new THREE.Vector3();
+  const face = { x: 850, y: 330, w: 130, h: 180, roll: .3 };
+  pumpkin.setQuality('high');
+  const high = pumpkin.fitFacePose(face), point = { x: high.x, y: high.y };
+  const highHit = pumpkin.hit(point, high, true); assert.ok(highHit);
+  pumpkin.setQuality('light');
+  const light = pumpkin.fitFacePose(face), lightHit = pumpkin.hit(point, light, true);
+  assert.deepEqual(light, high);
+  assert.deepEqual(lightHit, highHit);
+  pumpkin.geometry.dispose(); pumpkin.shell.material.dispose();
+});
 
 test('face fit follows distant and nearby faces using the actual shell projection without fixed size clamps', () => {
   for (const geometry of [createPumpkinGeometry(), deliveryShell()]) {

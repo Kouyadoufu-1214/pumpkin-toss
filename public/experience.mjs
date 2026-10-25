@@ -1,6 +1,6 @@
 import { clamp, distance, isPinched } from './interaction.mjs';
-import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose, HELD_HAND_GRACE_MS } from './exhibit-logic.mjs?v=20261025-edge-hold';
-import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs?v=20261025-head-cover';
+import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose, HELD_HAND_GRACE_MS } from './exhibit-logic.mjs?v=20261025-dev-tools';
+import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs?v=20261025-dev-tools';
 import { measureFace, faceCoverRegion, fallbackFacePose, manualFaceTarget, smoothFacePose } from './face-fit.mjs?v=20261025-head-cover';
 import { PumpkinArt } from './pumpkin-art.mjs?v=20261020-blank';
 import { outlineInfo } from './carving-path.mjs';
@@ -8,7 +8,10 @@ import { encodeMask, decodeMask, validateArtwork, MAX_GALLERY_MASK_LENGTH } from
 import { GALLERY_URL } from './gallery-config.mjs';
 import { drawWorkshopScene } from './workshop-scene.mjs';
 import { setupShareControls } from './share-link.mjs';
-import { HandMotion } from './hand-motion.mjs?v=20261025-fast-throw';
+import { HandMotion, SoftFollow } from './hand-motion.mjs?v=20261025-dev-tools';
+import { normalizeTrackingTuning } from './tracking-tuning.mjs';
+import { loadTrackingTuning, setupTrackingDebug } from './tracking-debug.mjs?v=20261025-dev-tools';
+import { RenderPerformance } from './render-performance.mjs';
 
 const $ = id => document.getElementById(id);
 const canvas = $('screen'), c = canvas.getContext('2d'), video = $('camera-video');
@@ -26,6 +29,10 @@ let renderTime = 0;
 let rememberedRoles = { caster: null, receiver: null }, pendingRelease = null;
 let handMissing = false, holdRecovery = false;
 const handMotion = new HandMotion();
+let trackingTuning = loadTrackingTuning(), debugControls = null;
+const softFollow = new SoftFollow(trackingTuning.smoothingMs), renderPerformance = new RenderPerformance();
+toss.configure(trackingTuning); renderPerformance.setMode(trackingTuning.quality);
+let debugReason = 'waiting-hand', lastThrowReason = '', lastThrowMetrics = null, lastDebugSnapshotAt = -Infinity;
 const facePoseCache = new WeakMap();
 const cameraActive = () => source === 'camera' || source === 'mouse-camera';
 const mouseControl = () => source === 'mouse' || source === 'mouse-camera';
@@ -59,6 +66,37 @@ const carvingDonePoint = () => matchMedia('(max-width:620px)').matches ? { x: 85
 const sampleFace = side => ({ x: side === 'left' ? 330 : 950, y: 345, w: 103, h: 145, sample: true });
 const sampleRoles = () => ({ caster: sampleFace(swapped ? 'right' : 'left'), receiver: sampleFace(swapped ? 'left' : 'right') });
 
+function applyTrackingTuning(value) {
+  const previousQuality = trackingTuning.quality;
+  trackingTuning = normalizeTrackingTuning(value);
+  toss.configure(trackingTuning); softFollow.configure(trackingTuning.smoothingMs);
+  if (trackingTuning.quality !== previousQuality) renderPerformance.setMode(trackingTuning.quality);
+}
+function rememberThrowCheck(result) {
+  lastThrowMetrics = result;
+  if (!result.ok) lastThrowReason = result.reason;
+}
+function updateDeveloper(time) {
+  if (!debugControls?.isOpen()) return;
+  debugControls.draw(c, hands, controlHand, { time, handSeenAt, missing: handMissing });
+  if (time - lastDebugSnapshotAt < 200) return;
+  lastDebugSnapshotAt = time;
+  const point = pendingRelease?.point || controlHand?.palm;
+  const metrics = phase === 'held' && !handMissing && point
+    ? toss.diagnostics(point, pendingRelease?.time ?? handSeenAt, currentTarget()) : lastThrowMetrics;
+  debugControls.update({ renderFps: renderPerformance.fps, renderMs: renderPerformance.renderMs,
+    handFps: trackingInfo.handFps, handLatencyMs: trackingInfo.handLatencyMs, handMs: trackingInfo.handMs,
+    faceMs: trackingInfo.lastFaceMs, phase, gesture: controlHand?.gesture?.categoryName || 'None',
+    confidence: controlHand?.gesture?.score, handCount: hands.length, missing: handMissing,
+    receiverSeen: !!receiver, speed: metrics?.speed || 0, travel: metrics?.distance || 0,
+    duration: metrics?.duration || 0, gap: phase === 'flying' || phase === 'worn'
+      ? metrics?.gap || 0 : trackingInfo.handSampleGapMs || 0,
+    minSpeed: trackingTuning.minSpeed, minDistance: trackingTuning.minDistance,
+    releaseProgress: pendingRelease ? clamp((handSeenAt - pendingRelease.time) / Math.max(1, trackingTuning.openConfirmMs), 0, 1) : phase === 'flying' || phase === 'worn' ? 1 : 0,
+    reason: debugReason,
+    lastThrowReason, quality: renderPerformance.quality }, time);
+}
+
 function cue(step, title, detail) {
   const key = `${step}|${title}|${detail}`;
   if (key === lastCue) return;
@@ -85,14 +123,15 @@ function resetRound() {
   phase = 'ready'; toss.cancel(); heldPose = flight = smoothTarget = mouseTrackedFace = null;
   rememberedRoles = { caster: null, receiver: null }; pendingRelease = null;
   handMissing = holdRecovery = false;
-  handMotion.reset();
+  handMotion.reset(); softFollow.reset(); debugReason = 'waiting-hand'; lastThrowMetrics = null;
   controlHand = null; gripped = pinched = false; dwell.reset(); art.cancel(); pointer = null;
   $('restart').hidden = true;
 }
 function cancelHold(message) {
   pendingRelease = null;
   handMissing = holdRecovery = false;
-  handMotion.reset();
+  handMotion.reset(); softFollow.reset();
+  debugReason = phase === 'flying' ? 'launched' : phase === 'worn' ? 'landed' : 'cancelled';
   if (phase === 'held') { toss.cancel(); heldPose = null; phase = 'ready'; if (message) notice(message); }
   gripped = false; controlHand = null;
   if (!carving || pointer === null) {
@@ -112,7 +151,7 @@ function displayHeldPose(time = performance.now()) {
   const point = handMotion.position(time);
   // Keep the held pumpkin visible when the real hand straddles the image edge.
   // Only the drawing is clamped; measured coordinates still drive the throw.
-  const rect = cameraRect(), visible = point || heldPose;
+  const rect = cameraRect(), visible = softFollow.follow(point || heldPose, time) || heldPose;
   const marginX = Math.min(heldPose.w * .42, rect.w / 2), marginY = Math.min(heldPose.h * .42, rect.h / 2);
   return { ...heldPose, x: clamp(visible.x, rect.x + marginX, rect.x + rect.w - marginX),
     y: clamp(visible.y, rect.y + marginY, rect.y + rect.h - marginY) };
@@ -137,6 +176,7 @@ function launch(from, target) {
   hideThrowResult();
   flight = { start: { ...from }, target: { ...target }, since: performance.now() };
   phase = 'flying'; toss.cancel(); gripped = false; handMissing = holdRecovery = false; heldPose = null; dwell.reset(); tone('throw');
+  debugReason = 'launched';
 }
 function tone(type) {
   if (!$('sound').checked) return;
@@ -194,6 +234,7 @@ function updateCameraLabels() {
   $('target-auto').hidden = source !== 'mouse-camera' || !manualTarget;
 }
 function updateTrackingStatus(elapsed = 0) {
+  debugControls?.record?.({ phase, reason: debugReason }, performance.now());
   const engine = trackingInfo.handEngine === 'gesture-recognizer' ? 'グー・パー認識' : trackingInfo.handEngine === 'hand-landmarker' ? '指の位置で認識' : '手の認識なし';
   const status = phase === 'worn' ? receiver?.measured && !receiver.manual ? '髪・耳まで覆うサイズで追従中' : '投球完了 · カメラ映像はそのまま表示中' : phase === 'flying' ? '投げられた！ かぼちゃが相手の頭へ' : source === 'mouse-camera'
     ? manualTarget ? '位置を指定中 · マウスで投げられます' : faces.length ? '頭全体にサイズ調整中 · マウスで投げられます' : '顔をクリックして位置を指定できます'
@@ -221,14 +262,14 @@ function expireTracking(time) {
   // Empty results can arrive repeatedly; they must not extend the last real
   // hand's grace period if the worker subsequently stalls.
   if (source === 'camera' && !carving && phase === 'held' && handSeenAt && time - handSeenAt > HELD_HAND_GRACE_MS) {
-    cancelHold('手を画面に戻して、もう一度グーにしよう'); updateTrackingStatus();
+    cancelHold('手を画面に戻して、もう一度グーにしよう'); debugReason = lastThrowReason = 'missing-hand'; updateTrackingStatus();
   }
   if (!lastResult || time - lastResult <= 900) return;
   faces = []; hands = [];
   if (source === 'camera') {
     caster = null; receiver = solo ? sampleFace('right') : null; rememberedRoles = { caster: null, receiver: null };
     if (!carving && phase === 'held' && time - handSeenAt <= HELD_HAND_GRACE_MS) {
-      handMissing = holdRecovery = true;
+      handMissing = holdRecovery = true; debugReason = 'missing-hand';
     } else { lastResult = 0; cancelHold(); }
   } else lastResult = 0;
   updateTrackingStatus();
@@ -290,7 +331,7 @@ async function startCamera(practice = false, input = 'hand', reuse = true) {
     $('loading-detail').textContent = input === 'mouse' ? '映像を見ながら、先にマウスで投げられます。' : '映像は表示中です。「映像＋マウスで投げる」にも切り替えられます。';
     if (input === 'mouse') { mouseCameraRoles(); updateTrackingStatus(); }
     initTimer = setTimeout(() => { if (id === session) trackingFallback('認識の準備に時間がかかっています。映像を残してマウス操作に切り替えました。'); }, 45000);
-    worker = new Worker('./tracker-worker.js?v=20261025-fast-throw');
+    worker = new Worker('./tracker-worker.js?v=20261025-dev-tools');
     await new Promise((resolve, reject) => {
       requestReject = reject;
       worker.onerror = () => {
@@ -338,10 +379,16 @@ async function requestFrame(time) {
   if (!workerReady || processing || video.readyState < 2 || document.hidden || time - lastFrame < 16 || video.currentTime === lastVideoTime) return;
   const id = session; processing = true; lastFrame = time; lastVideoTime = video.currentTime;
   try {
-    const scale = Math.min(960 / video.videoWidth, 960 / video.videoHeight, 1);
+    // Automatic render upgrades must not increase inference work on a worker
+    // that may still be slow. High-detail input is an explicit operator choice.
+    const inputSize = trackingTuning.quality === 'high' ? 960 : 768;
+    const scale = Math.min(inputSize / video.videoWidth, inputSize / video.videoHeight, 1);
     const bitmap = await createImageBitmap(video, { resizeWidth: Math.round(video.videoWidth * scale), resizeHeight: Math.round(video.videoHeight * scale) });
     if (id !== session || !worker) { bitmap.close(); return; }
-    worker.postMessage({ type: 'frame', bitmap, time }, [bitmap]);
+    const detectHands = source === 'camera' && (carving || phase !== 'worn' || $('throw-result').hidden || !!debugControls?.isOpen());
+    if (!detectHands && source === 'camera') { hands = []; controlHand = null; }
+    worker.postMessage({ type: 'frame', bitmap, time, detectHands,
+      faceIntervalMs: detectHands ? trackingTuning.quality === 'high' ? 160 : 240 : 100 }, [bitmap]);
     frameFailures = 0;
   } catch {
     if (id === session) {
@@ -353,12 +400,13 @@ async function requestFrame(time) {
 function acceptTracking(data) {
   const now = performance.now(), time = data.time ?? now, elapsed = lastResult ? now - lastResult : 0;
   const hasHands = Array.isArray(data.hands), facesUpdated = data.facesUpdated !== false && Array.isArray(data.faces);
-  if (hasHands || source === 'mouse-camera' && facesUpdated) lastResult = now;
+  if (hasHands || facesUpdated && (source === 'mouse-camera' || phase === 'worn')) lastResult = now;
   trackingInfo = { ...trackingInfo, ...data };
   if (hasHands) {
     trackingInfo.handLatencyMs = Math.max(0, Math.round(now - time));
     if (elapsed > 0) trackingInfo.handFps = Math.round(1000 / elapsed);
   }
+  if (facesUpdated && Number.isFinite(data.faceMs)) trackingInfo.lastFaceMs = data.faceMs;
   if (facesUpdated) faces = data.faces.map((points, index) => measureFace(points, screenPoint, faceQuaternion(data.matrices?.[index], $('mirror').checked))).filter(Boolean);
   else if (Number.isFinite(data.faceTime) && time - data.faceTime > 850) faces = [];
   if (source === 'mouse-camera') { mouseCameraRoles(); updateTrackingStatus(elapsed); return; }
@@ -375,15 +423,30 @@ function acceptTracking(data) {
   // Pointer drags must never be released or cancelled by a hand inference.
   if (!carving && pointer !== null) return;
   const previous = controlHand, gap = handSeenAt ? time - handSeenAt : elapsed;
-  controlHand = chooseControlHand(hands, phase === 'held' || carving ? previous : null, { ...roleOptions(), elapsed: gap, anchor: restPose(time), preferGrip: !carving && phase === 'ready', fastMotion: !carving && phase === 'held', recoverHeld: !carving && phase === 'held' });
+  trackingInfo.handSampleGapMs = gap;
+  controlHand = chooseControlHand(hands, phase === 'held' || carving ? previous : null, { ...roleOptions(), elapsed: gap, anchor: restPose(time), preferGrip: !carving && phase === 'ready', fastMotion: !carving && phase === 'held', recoverHeld: !carving && phase === 'held', gripOptions: { confidence: trackingTuning.gestureConfidence } });
+  if (!carving && (phase === 'flying' || phase === 'worn')) {
+    // Keep live skeletons available after a throw without treating the next
+    // absent/receiver-side hand as a failure of the throw that already finished.
+    handMissing = holdRecovery = false;
+    if (controlHand) handSeenAt = time;
+    debugReason = phase === 'flying' ? 'launched' : 'landed';
+    if (phase === 'worn') {
+      if (!controlHand || !$('throw-result').hidden) dwell.reset();
+      else if (dwell.update(distance(controlHand.palm, { x: 640, y: 625 }) < 60, time)) resetRound();
+    }
+    updateTrackingStatus(elapsed); return;
+  }
   if (!controlHand) {
     // Retain a real opening briefly so another observed open can confirm it.
     // Neither a missed hand nor elapsed time can confirm a release on its own.
     if (pendingRelease && time - pendingRelease.time > 320) pendingRelease = null;
     if (!carving && phase === 'held' && previous && gap <= HELD_HAND_GRACE_MS) {
-      controlHand = previous; handMissing = holdRecovery = true; updateTrackingStatus(elapsed); return;
+      controlHand = previous; handMissing = holdRecovery = true; debugReason = 'missing-hand'; updateTrackingStatus(elapsed); return;
     }
-    cancelHold(previous && phase === 'held' ? '手を見失いました。投げる側で、もう一度グーにしよう' : null); dwell.reset(); updateTrackingStatus(elapsed); return;
+    if (previous && phase === 'held') lastThrowReason = 'missing-hand';
+    cancelHold(previous && phase === 'held' ? '手を見失いました。投げる側で、もう一度グーにしよう' : null);
+    debugReason = hands.length ? 'wrong-side' : 'waiting-hand'; dwell.reset(); updateTrackingStatus(elapsed); return;
   }
   handMissing = false;
   handSeenAt = time;
@@ -396,30 +459,26 @@ function acceptTracking(data) {
     if (dwell.update(!pinch && distance(controlHand.palm, carvingDonePoint()) < 70, time)) finishCarving();
     return;
   }
-  if (phase === 'worn') {
-    if (!$('throw-result').hidden) { dwell.reset(); return; }
-    if (dwell.update(distance(controlHand.palm, { x: 640, y: 625 }) < 60, time)) resetRound();
-    return;
-  }
   const gesture = controlHand.gesture, point = controlHand.palm, nearEdge = handAtCameraEdge(controlHand);
-  const confidentOpen = gesture?.categoryName === 'Open_Palm' && gesture.score >= .85 && gesture.score <= 1;
+  const confidentOpen = gesture?.categoryName === 'Open_Palm' && gesture.score >= trackingTuning.gestureConfidence && gesture.score <= 1;
   // Cropped fingertips can look straight to landmark geometry. Preserve an
   // existing grip at the edge unless the recognizer actually sees an open palm.
-  const observedGrip = handGrip(controlHand.points, gripped, gesture, controlHand.worldPoints);
+  const observedGrip = handGrip(controlHand.points, gripped, gesture, controlHand.worldPoints, { confidence: trackingTuning.gestureConfidence });
   const grip = observedGrip || phase === 'held' && nearEdge && !confidentOpen
     && (trackingInfo.handEngine !== 'hand-landmarker' || handAtCameraEdge(controlHand, 0));
   if (phase === 'ready' && grip) {
     pendingRelease = null;
-    handMotion.reset(); handMotion.observe(point, time);
+    handMotion.reset(); softFollow.reset(); handMotion.observe(point, time); debugReason = 'gripping';
     toss.begin(point, time); phase = 'held'; heldPose = { ...restPose(time), x: point.x, y: point.y };
   } else if (phase === 'held') {
     if (gap > 650) {
       // Reacquire the same nearby hand without counting unseen travel as a toss.
-      pendingRelease = null; handMotion.reset(); toss.begin(point, time); holdRecovery = true;
+      pendingRelease = null; handMotion.reset(); softFollow.reset(); toss.begin(point, time); holdRecovery = true;
     }
     handMotion.observe(point, time);
     heldPose.x = point.x; heldPose.y = point.y;
     if (grip) {
+      debugReason = observedGrip ? 'gripping' : 'edge-hold';
       pendingRelease = null;
       if (observedGrip) holdRecovery = false;
       if (!toss.move(point, time)) toss.begin(point, time);
@@ -427,8 +486,9 @@ function acceptTracking(data) {
     else {
       const targetNow = currentTarget();
       if (confidentOpen) {
-        const quick = toss.previewRelease(point, time, targetNow);
+        const quick = toss.diagnostics(point, time, targetNow);
         if (quick.ok && quick.fast) {
+          rememberThrowCheck(quick);
           const from = displayHeldPose(now);
           toss.release(point, time, targetNow); pendingRelease = null;
           launch(from, targetNow); updateTrackingStatus(elapsed); return;
@@ -438,19 +498,24 @@ function acceptTracking(data) {
       // must not drop the pumpkin. Use the first opening's time and position so
       // a slow recognition rate does not erase the actual throwing motion.
       if (pendingRelease && time - pendingRelease.time > 320) pendingRelease = null;
-      if (!pendingRelease) { pendingRelease = { point: { ...point }, time, from: { ...heldPose } }; updateTrackingStatus(elapsed); return; }
-      if (time - pendingRelease.time < 60) return;
+      if (!pendingRelease) {
+        pendingRelease = { point: { ...point }, time, from: { ...heldPose } }; debugReason = 'open-confirm';
+        if (trackingTuning.openConfirmMs > 0) { updateTrackingStatus(elapsed); return; }
+      }
+      if (time - pendingRelease.time < trackingTuning.openConfirmMs) return;
       const { point: releasePoint, time: releaseTime, from } = pendingRelease;
       pendingRelease = null;
       const target = currentTarget(), direction = Math.sign((target?.x ?? releasePoint.x) - (toss.start?.x ?? releasePoint.x)) || 1;
-      if ((point.x - releasePoint.x) * direction < -32) { cancelHold(); notice('相手のほうへ手を動かしながら、パーにしよう'); updateTrackingStatus(elapsed); return; }
+      if ((point.x - releasePoint.x) * direction < -32) { cancelHold(); debugReason = lastThrowReason = 'direction'; notice('相手のほうへ手を動かしながら、パーにしよう'); updateTrackingStatus(elapsed); return; }
+      rememberThrowCheck(toss.diagnostics(releasePoint, releaseTime, target));
       const result = toss.release(releasePoint, releaseTime, target);
       if (result.ok) launch(displayHeldPose(now) || from, target);
       else if (nearEdge || holdRecovery) {
         // A cropped/reacquired hand with no measured swing keeps its pumpkin.
         toss.begin(point, time);
+        debugReason = result.reason;
         if (result.reason === 'no-receiver') notice('相手の顔をカメラに映そう');
-      } else { cancelHold(); notice(result.reason === 'no-receiver' ? '相手の顔をカメラに映そう' : '相手のほうへ、少し大きく振って手を開こう'); }
+      } else { cancelHold(); debugReason = result.reason; notice(result.reason === 'no-receiver' ? '相手の顔をカメラに映そう' : '相手のほうへ、少し大きく振って手を開こう'); }
     }
   }
   gripped = grip;
@@ -643,8 +708,22 @@ function updateCue() {
 }
 
 function render(time) {
+  const started = performance.now();
+  try { renderScene(time); }
+  finally {
+    renderPerformance.record(time, performance.now() - started);
+    updateDeveloper(time);
+  }
+}
+function renderScene(time) {
   const elapsed = renderTime ? time - renderTime : 1000 / 60; renderTime = time;
-  requestAnimationFrame(render); background(time);
+  requestAnimationFrame(render);
+  if (document.hidden) return;
+  pumpkin?.setQuality?.(renderPerformance.quality);
+  // The live image covers the scene. Avoid painting gradients and decorations
+  // under every video frame, and let the cached workshop paint its own scene.
+  if (cameraActive()) { c.fillStyle = '#17121e'; c.fillRect(0, 0, W, H); }
+  else if (!carving) background(time);
   if (cameraActive()) {
     drawCamera(); requestFrame(time);
     expireTracking(time);
@@ -690,7 +769,7 @@ function render(time) {
       const target = currentTarget();
       if (target) flight.target = target;
       pose = flightPose(flight.start, flight.target, progress);
-      if (progress >= 1) { phase = 'worn'; wornSince = time; smoothTarget = target; $('restart').hidden = false; tone('land'); }
+      if (progress >= 1) { phase = 'worn'; debugReason = 'landed'; wornSince = time; smoothTarget = target; $('restart').hidden = false; tone('land'); }
     }
     if (phase === 'worn') {
       const target = currentTarget();
@@ -771,6 +850,8 @@ $('fullscreen').onclick = async () => {
   catch { notice('全画面にできませんでした。ブラウザーの全画面操作をお試しください。'); }
 };
 setupShareControls();
+debugControls = setupTrackingDebug({ initialSettings: trackingTuning, onChange: applyTrackingTuning });
+$('developer-mode').onclick = () => { toggleSettings(false); debugControls.toggle(true); };
 restoreDraft(); openCarving();
 document.addEventListener('visibilitychange', () => { if (document.hidden) { art.cancel(); saveDraft(); } });
 requestAnimationFrame(time => {

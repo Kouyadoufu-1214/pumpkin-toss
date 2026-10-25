@@ -1,4 +1,5 @@
 import { clamp, distance } from './interaction.mjs';
+import { normalizeTrackingTuning } from './tracking-tuning.mjs';
 
 // Zones are in mirrored screen coordinates; a single face is never its own receiver.
 export function resolveRoles(faces, { width = 1280, swapped = false, solo = false } = {}) {
@@ -25,7 +26,7 @@ function rememberControlHand(hand, hands, previous = null, elapsed = 0) {
   return hand;
 }
 
-export function handGrip(points, previous = false, gesture = null, worldPoints = null) {
+export function handGrip(points, previous = false, gesture = null, worldPoints = null, options = {}) {
   if (points?.length !== 21 || !points.every(finitePoint)) return false;
   // World landmarks use the same metric on every axis, so a fist turned toward
   // the camera does not become an apparently straight finger in projection.
@@ -49,7 +50,8 @@ export function handGrip(points, previous = false, gesture = null, worldPoints =
   // open hands better than distances projected onto the camera image alone.
   if (pinchRatio < .46) return true;
   const validScore = Number.isFinite(gesture?.score) && gesture.score >= 0 && gesture.score <= 1;
-  if (validScore && gesture.score >= .7) {
+  const confidence = Number.isFinite(options?.confidence) ? clamp(options.confidence, .5, .95) : .7;
+  if (validScore && gesture.score >= confidence) {
     if (gesture.categoryName === 'Closed_Fist') return true;
     if (gesture.categoryName === 'Open_Palm') return false;
   }
@@ -75,7 +77,7 @@ export function handGrip(points, previous = false, gesture = null, worldPoints =
     || (previous && possibleFist && gesture.score >= .55 && folded >= 1 && extended < 2);
 }
 
-export function chooseControlHand(hands, previous, { width = 1280, swapped = false, solo = false, elapsed = 80, anchor = null, preferGrip = false, fastMotion = false, recoverHeld = false } = {}) {
+export function chooseControlHand(hands, previous, { width = 1280, swapped = false, solo = false, elapsed = 80, anchor = null, preferGrip = false, gripOptions = null, fastMotion = false, recoverHeld = false } = {}) {
   const valid = hands.filter(hand => finitePoint(hand.palm) && finitePoint(hand.wrist));
   if (previous) {
     if (!finitePoint(previous.wrist) || !Number.isFinite(elapsed) || elapsed > (recoverHeld ? HELD_HAND_GRACE_MS : MAX_SAMPLE_GAP)) return null;
@@ -152,14 +154,23 @@ export function chooseControlHand(hands, previous, { width = 1280, swapped = fal
     return null;
   }
   const selected = valid.filter(h => solo || (swapped ? h.palm.x > width * .5 : h.palm.x < width * .5))
-    .sort((a, b) => (preferGrip ? Number(handGrip(b.points, false, b.gesture, b.worldPoints)) - Number(handGrip(a.points, false, a.gesture, a.worldPoints)) : 0)
+    .sort((a, b) => (preferGrip ? Number(handGrip(b.points, false, b.gesture, b.worldPoints, gripOptions))
+      - Number(handGrip(a.points, false, a.gesture, a.worldPoints, gripOptions)) : 0)
       || (finitePoint(anchor) ? distance(a.palm, anchor) - distance(b.palm, anchor) : 0)
       || (swapped ? b.palm.x - a.palm.x : a.palm.x - b.palm.x))[0] || null;
   return rememberControlHand(selected, valid);
 }
 
 export class TossGesture {
-  constructor() { this.cancel(); }
+  constructor() { this.settings = { minSpeed: 200, minDistance: 40 }; this.cancel(); }
+  configure(options = {}) {
+    const normalized = normalizeTrackingTuning({
+      minSpeed: Number.isFinite(options?.minSpeed) ? options.minSpeed : this.settings.minSpeed,
+      minDistance: Number.isFinite(options?.minDistance) ? options.minDistance : this.settings.minDistance,
+    });
+    this.settings = { minSpeed: normalized.minSpeed, minDistance: normalized.minDistance };
+    return this;
+  }
   cancel() { this.active = false; this.history = []; this.start = null; }
   begin(point, time) {
     this.cancel();
@@ -178,25 +189,40 @@ export class TossGesture {
     return true;
   }
   previewRelease(point, time, target) {
+    return this.releaseResult(this.diagnostics(point, time, target));
+  }
+  diagnostics(point, time, target) {
     const preview = new TossGesture();
+    preview.settings = { ...this.settings };
     preview.active = this.active;
     preview.start = this.start ? { ...this.start } : null;
     preview.history = this.history.map(sample => ({ ...sample }));
-    return preview.release(point, time, target);
+    return preview.evaluateRelease(point, time, target);
   }
   release(point, time, target) {
-    if (!this.active) return { ok: false, reason: 'cancelled' };
-    if (!target || !Number.isFinite(target.x)) { this.cancel(); return { ok: false, reason: 'no-receiver' }; }
-    if (time - this.history.at(-1).time > MAX_SAMPLE_GAP) { this.cancel(); return { ok: false, reason: 'slow' }; }
+    return this.releaseResult(this.evaluateRelease(point, time, target));
+  }
+  releaseResult(result) {
+    return result.ok ? { ok: true, fast: result.fast } : { ok: false, reason: result.reason };
+  }
+  evaluateRelease(point, time, target) {
+    const finite = value => Number.isFinite(value) ? value : 0;
+    const direction = finitePoint(this.start) && Number.isFinite(target?.x) ? Math.sign(target.x - this.start.x) || 1 : 0;
+    const metrics = { speed: 0, travel: finitePoint(point) && finitePoint(this.start) ? finite((point.x - this.start.x) * direction) : 0,
+      distance: finitePoint(point) && finitePoint(this.start) ? finite(distance(this.start, point)) : 0,
+      duration: finite(time - this.start?.time), gap: finite(time - this.history.at(-1)?.time) };
+    const outcome = (reason, fast = false) => ({ ok: reason === 'ready', reason, fast, ...metrics });
+    if (!this.active) return outcome('cancelled');
+    if (!target || !Number.isFinite(target.x)) { this.cancel(); return outcome('no-receiver'); }
+    if (time - this.history.at(-1).time > MAX_SAMPLE_GAP) { this.cancel(); return outcome('slow'); }
     const priorSamples = this.history.slice();
-    if (!this.move(point, time)) return { ok: false, reason: 'cancelled' };
+    if (!this.move(point, time)) return outcome('cancelled');
     const history = this.history, start = this.start;
-    const direction = Math.sign(target.x - start.x) || 1;
     const toward = (point.x - start.x) * direction;
     this.cancel();
-    if (toward < 24) return { ok: false, reason: 'direction' };
+    if (toward < 24) return outcome('direction');
     const recent = history.filter(p => time - p.time <= RELEASE_GRACE);
-    if (recent.some(p => (p.x - point.x) * direction > 32)) return { ok: false, reason: 'direction' };
+    if (recent.some(p => (p.x - point.x) * direction > 32)) return outcome('direction');
     // The opening observation cannot be the only evidence of a swing: a new
     // distant hand can otherwise look like a fast jump from a stationary hold.
     // Require forward motion already recorded before this release position.
@@ -237,12 +263,13 @@ export class TossGesture {
           && time - last.time <= 160) fast = true;
       }
     }
+    metrics.speed = speed;
     const duration = time - start.time;
     // A real quick flick must not fail just because it finishes within 90ms.
     // Require substantially more travel and speed for that short observation.
     const quickFlick = duration >= 35 && toward >= 100 && speed >= 1000;
-    if (speed < 200 || (duration < 90 && !quickFlick) || distance(start, point) < 40) return { ok: false, reason: 'slow' };
-    return { ok: true, fast };
+    if (speed < this.settings.minSpeed || (duration < 90 && !quickFlick) || metrics.distance < this.settings.minDistance) return outcome('slow');
+    return outcome('ready', fast);
   }
 }
 

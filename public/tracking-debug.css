@@ -1,0 +1,45 @@
+.tracking-debug[hidden] { display: none !important; }
+.tracking-debug {
+  position: fixed; z-index: 90; right: 16px; bottom: 16px; width: min(320px, calc(100vw - 32px));
+  max-height: min(82vh, 820px); overflow: auto; box-sizing: border-box; padding: 16px;
+  color: #f9f5ef; background: rgba(16, 18, 28, .97); border: 1px solid #ac8147;
+  border-radius: 12px; box-shadow: 0 12px 42px #0009; font: 13px/1.5 system-ui, sans-serif;
+  overscroll-behavior: contain; scrollbar-color: #8c704b #191b28;
+}
+.tracking-debug * { box-sizing: border-box; }
+.tracking-debug__header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.tracking-debug h2 { margin: 0; color: #ffd18b; font: 700 16px/1.4 system-ui, sans-serif; letter-spacing: 0; }
+.tracking-debug h3 { margin: 16px 0 6px; color: #fff0d7; font: 700 13px/1.4 system-ui, sans-serif; }
+.tracking-debug p { margin: 8px 0; }
+.tracking-debug button, .tracking-debug select {
+  min-height: 32px; padding: 5px 9px; color: #fff5e8; background: #292735;
+  border: 1px solid #79707c; border-radius: 6px; font: inherit; cursor: pointer;
+}
+.tracking-debug button:hover { background: #44374a; }
+.tracking-debug button:focus-visible, .tracking-debug input:focus-visible, .tracking-debug select:focus-visible {
+  outline: 2px solid #8ce8ff; outline-offset: 3px;
+}
+.tracking-debug__close { flex: 0 0 auto; }
+.tracking-debug__intro, .tracking-debug__help { color: #c6c1cd; font-size: 11px; }
+.tracking-debug__state { font-weight: 700; color: #fff0cf; }
+.tracking-debug__stages { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; list-style: none; margin: 8px 0; padding: 0; counter-reset: tracking-step; }
+.tracking-debug__stages li { padding: 6px; color: #aaa5b1; border: 1px solid #49424f; border-radius: 5px; font-size: 11px; }
+.tracking-debug__stages li::before { counter-increment: tracking-step; content: counter(tracking-step) ' '; }
+.tracking-debug__stages .is-current { color: #1a1620; background: #ffc470; border-color: #ffc470; font-weight: 700; }
+.tracking-debug__stages .is-complete { color: #baf1d1; border-color: #3c7355; }
+.tracking-debug__reason { min-height: 2.8em; padding: 7px 9px; background: #292333; border-radius: 5px; font-size: 12px; }
+.tracking-debug__failure { color: #ffbdab; font-size: 11px; }
+.tracking-debug__release-label { color: #cac4d2; font-size: 11px; }
+.tracking-debug__release { display: block; width: 100%; height: 7px; margin: 4px 0 12px; accent-color: #ffc470; }
+.tracking-debug__metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 0; }
+.tracking-debug__metrics div { min-width: 0; }
+.tracking-debug__metrics dt { color: #aaa5b4; font-size: 10px; }
+.tracking-debug__metrics dd { margin: 0; font-size: 12px; font-variant-numeric: tabular-nums; color: #f6f4f9; }
+.tracking-debug__events { margin: 0; padding: 0 0 0 18px; color: #d6d0dc; font-size: 11px; }
+.tracking-debug__events li { margin: 3px 0; }
+.tracking-debug__tuning { display: grid; gap: 10px; }
+.tracking-debug__field { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: center; }
+.tracking-debug__field label { color: #f0eaf4; font-size: 12px; }
+.tracking-debug__field output { color: #ffd18b; font-size: 12px; font-variant-numeric: tabular-nums; }
+.tracking-debug input[type='range'] { grid-column: 1 / -1; width: 100%; margin: 3px 0; accent-color: #ffb65b; cursor: pointer; }
+.tracking-debug__reset { width: 100%; margin-top: 13px; }

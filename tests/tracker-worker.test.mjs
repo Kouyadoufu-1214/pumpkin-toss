@@ -41,10 +41,10 @@ function harness({ failInit = [], failFrame = [], failBundle = false, failFiles 
     messages, created, detected, closed, responses, events,
     hands: () => messages.findLast(message => message.type === 'hands'),
     init: options => self.onmessage({ data: { type: 'init', ...options } }),
-    async frame(time = 1234) {
+    async frame(time = 1234, options = {}) {
       let closes = 0;
       const bitmap = { close() { closes++; events.push({ type: 'bitmap-close', at: clock }); } };
-      await self.onmessage({ data: { type: 'frame', bitmap, time } });
+      await self.onmessage({ data: { type: 'frame', bitmap, time, ...options } });
       assert.equal(closes, 1, 'every transferred frame must be released');
       return messages.at(-1);
     },
@@ -87,6 +87,20 @@ test('mouse mode never initializes or runs either hand model', async () => {
   assert.equal(result.faceTime, 120);
   assert.equal(h.hands(), undefined);
   assert.equal(result.handMs, 0);
+});
+
+test('completed rounds can pause hand inference without unloading it or losing face tracking', async () => {
+  const h = harness(); await h.init();
+  await h.frame(1000, { detectHands: false, faceIntervalMs: 100 });
+  await h.frame(1050, { detectHands: false, faceIntervalMs: 100 });
+  await h.frame(1100, { detectHands: false, faceIntervalMs: 100 });
+  assert.deepEqual(h.detected.map(item => item.kind), ['face', 'face']);
+  assert.equal(h.hands(), undefined); assert.deepEqual(h.closed, []);
+  await h.frame(1200, { detectHands: true, faceIntervalMs: 240 });
+  assert.equal(h.hands().time, 1200);
+  assert.deepEqual(h.detected.map(item => item.kind), ['face', 'face', 'gesture']);
+  await h.frame(1340, { detectHands: true, faceIntervalMs: 240 });
+  assert.equal(h.messages.at(-1).facesUpdated, true);
 });
 
 test('missing gesture model falls back to hand landmarks without losing faces', async () => {

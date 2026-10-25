@@ -1,8 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { HandMotion } from '../public/hand-motion.mjs';
+import { HandMotion, SoftFollow } from '../public/hand-motion.mjs';
 
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
+
+test('soft visual follow is independent of display frame rate and never alters measured targets', () => {
+  const outputs = [];
+  for (const hz of [30, 60, 120]) {
+    const follow = new SoftFollow(65), target = Object.freeze({ x: 60, y: 30 });
+    follow.follow({ x: 0, y: 0 }, 0);
+    for (let frame = 1; frame <= hz; frame++) follow.follow(target, frame * 1000 / hz);
+    outputs.push(follow.follow(target, 1000));
+  }
+  for (const output of outputs) { near(output.x, outputs[0].x); near(output.y, outputs[0].y); }
+});
+test('soft follow limits fast-motion lag, settles after stopping and supports disabling smoothing', () => {
+  const follow = new SoftFollow(65); follow.follow({ x: 0, y: 0 }, 0);
+  const point = follow.follow({ x: 600, y: 800 }, 16);
+  near(Math.hypot(point.x - 600, point.y - 800), 90);
+  for (let t = 32; t < 1000; t += 16) follow.follow({ x: 600, y: 800 }, t);
+  assert.ok(Math.abs(follow.point.x - 600) < .001);
+  follow.configure(0); assert.deepEqual(follow.follow({ x: 40, y: 50 }, 1010), { x: 40, y: 50 });
+  follow.reset(); assert.equal(follow.point, null);
+});
 
 test('180 ms camera latency advances the visual hand by at most 90 ms and updates between camera observations', () => {
   const motion = new HandMotion();

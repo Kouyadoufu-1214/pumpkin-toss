@@ -8,7 +8,8 @@
   <meta property="og:description" content="かぼちゃを作る → カメラで投げる → みんなの展示室へ。PCで遊べる文化祭のAR体験。">
   <meta property="og:url" content="https://kouyadoufu-1214.github.io/pumpkin-toss/">
   <link rel="canonical" href="https://kouyadoufu-1214.github.io/pumpkin-toss/">
-  <link rel="stylesheet" href="experience.css?v=20261025-edge-hold">
+  <link rel="stylesheet" href="experience.css?v=20261025-dev-tools">
+  <link rel="stylesheet" href="tracking-debug.css?v=20261025-dev-tools">
 </head>
 <body>
 <main id="exhibit" class="exhibit carving">
@@ -62,6 +63,7 @@
     <div class="face-fit-setting"><label for="face-fit-scale">髪・耳まで覆うサイズ <output id="face-fit-value" for="face-fit-scale">100%</output></label><input id="face-fit-scale" type="range" min="80" max="160" step="1" value="100" aria-describedby="face-fit-note"><button id="face-fit-reset" class="text-button">100%に戻す</button><p id="face-fit-note">顔の大きさをもとに、耳の左右と髪のある頭頂部まで覆う余裕を取ります。ボリュームのある髪型は、サイズを上げて調整できます。</p></div>
     <button id="swap" class="secondary">投げる側を左右入れ替える</button><button id="assist" class="secondary">スタッフ操作で投げる</button>
     <p id="tracking-status" class="technical">カメラは停止中</p>
+    <button id="developer-mode" class="secondary">開発者モード（F2）</button>
     <p class="settings-note">カメラ許可後、接続されたUSBカメラを機種名で選べます。グー・パーが反応しにくいときは「映像＋マウスで投げる」で遊べます。映像はそのまま表示し、顔をクリックして位置を指定することもできます。</p>
   </section>
   <dialog id="share-dialog" aria-labelledby="share-title">
@@ -92,6 +94,6 @@
     <noscript><p>JavaScriptが無効のため起動できません。JavaScriptが使えるPCのEdgeまたはChromeで、共有URLを開いてください。</p></noscript>
   </div>
 </section>
-<script src="startup.js?v=20261025-edge-hold"></script>
+<script src="startup.js?v=20261025-dev-tools"></script>
 </body>
 </html>

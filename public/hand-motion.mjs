@@ -38,3 +38,25 @@ export class HandMotion {
     return result;
   }
 }
+
+// A small, time-based visual lag hides uneven inference intervals. This never
+// feeds back into gesture recognition or the recorded camera coordinates.
+export class SoftFollow {
+  constructor(smoothingMs = 65) { this.configure(smoothingMs); this.reset(); }
+  configure(value) { this.smoothingMs = Number.isFinite(value) ? Math.max(0, Math.min(160, value)) : 65; }
+  reset() { this.point = null; this.time = null; }
+  follow(target, time) {
+    if (!Number.isFinite(target?.x) || !Number.isFinite(target?.y) || !Number.isFinite(time)) return null;
+    if (!this.point || !this.smoothingMs || time < this.time || time - this.time > 250) {
+      this.point = { x: target.x, y: target.y }; this.time = time; return { ...this.point };
+    }
+    const blend = 1 - Math.exp(-(time - this.time) / this.smoothingMs);
+    this.point.x += (target.x - this.point.x) * blend;
+    this.point.y += (target.y - this.point.y) * blend;
+    // Softness must not let a fast-moving pumpkin trail the hand indefinitely.
+    const dx = target.x - this.point.x, dy = target.y - this.point.y, lag = Math.hypot(dx, dy);
+    if (lag > 90) { this.point.x = target.x - dx / lag * 90; this.point.y = target.y - dy / lag * 90; }
+    this.time = time;
+    return { ...this.point };
+  }
+}

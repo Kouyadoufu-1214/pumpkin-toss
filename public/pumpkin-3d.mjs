@@ -93,7 +93,9 @@ function shellFitSamples(geometry) {
   }
   const points = Array.from(selected, i => [vertices.getX(i), vertices.getY(i), vertices.getZ(i)]);
   const extent = axis => Math.max(...points.map(point => point[axis])) - Math.min(...points.map(point => point[axis]));
-  const result = { points, w: extent(0), h: extent(1) };
+  // Keep the repeated fit projection in a packed numeric loop. The full
+  // support set is unchanged, so this does not approximate head coverage.
+  const result = { points: new Float64Array(points.flat()), w: extent(0), h: extent(1) };
   fitSamples.set(geometry, result);
   return result;
 }
@@ -122,14 +124,19 @@ function fittedFacePose(pumpkin, face, options) {
     const e = matrix.elements;
     let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
     const points = includeOutline ? [] : null;
-    for (const [x, y, z] of samples.points) {
+    const samplesXYZ = samples.points;
+    for (let i = 0; i < samplesXYZ.length; i += 3) {
+      const x = samplesXYZ[i], y = samplesXYZ[i + 1], z = samplesXYZ[i + 2];
       const denominator = e[3] * x + e[7] * y + e[11] * z + e[15];
       if (denominator <= camera.near) return null;
       const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / denominator + 1) * pumpkin.width / 2 - cover.x;
       const sy = (1 - (e[1] * x + e[5] * y + e[9] * z + e[13]) / denominator) * pumpkin.height / 2 - cover.y;
       const u = sx * cos + sy * sin, v = -sx * sin + sy * cos;
       if (points) points.push({ x: u, y: v });
-      left = Math.min(left, u); right = Math.max(right, u); top = Math.min(top, v); bottom = Math.max(bottom, v);
+      if (u < left) left = u;
+      if (u > right) right = u;
+      if (v < top) top = v;
+      if (v > bottom) bottom = v;
     }
     return { w: right - left, h: bottom - top, x: (left + right) / 2, y: (top + bottom) / 2, points };
   };
@@ -224,13 +231,16 @@ export class Pumpkin3D {
   constructor(maskCanvas, width, height) {
     this.width = width; this.height = height; this.disposed = false;
     this.maskContext = maskCanvas.getContext('2d');
-    this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, preserveDrawingBuffer: true });
+    // draw() copies the output synchronously into the application's 2D canvas.
+    // Screenshots use that canvas; retaining a second WebGL back buffer only
+    // adds driver work and is unnecessary for capture or context-loss fallback.
+    this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, preserveDrawingBuffer: false });
     this.renderError = null;
     this.renderer.debug.onShaderError = () => {
       if (!this.renderError) console.warn('Pumpkin shader unavailable; using the canvas fallback.');
       this.renderError = new Error('The pumpkin shader could not be compiled.');
     };
-    this.renderer.setSize(width, height, false); this.renderer.setPixelRatio(1);
+    this.quality = null; this.renderer.setPixelRatio(1); this.setQuality('high');
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.15;
@@ -303,6 +313,17 @@ export class Pumpkin3D {
 
   updateMask() { this.mask.needsUpdate = true; this.wallsDirty = true; }
 
+  setQuality(quality) {
+    if (quality !== 'light' && quality !== 'high') throw new RangeError('Pumpkin quality must be light or high.');
+    if (quality === this.quality) return false;
+    this.quality = quality;
+    // Only change the drawing buffer. Camera projection, face measurements,
+    // raycasting and carving all continue to use the logical canvas size.
+    const scale = quality === 'light' ? .65 : 1;
+    this.renderer.setSize(Math.max(1, Math.round(this.width * scale)), Math.max(1, Math.round(this.height * scale)), false);
+    return true;
+  }
+
   // Face measurements stay separate from the head cover region. Fit its full
   // outline in the same roll-free basis, without shrinking a turned face twice.
   fitFacePose(face, options = {}) { return fittedFacePose(this, face, options); }
@@ -330,7 +351,7 @@ export class Pumpkin3D {
     this.inside.material.emissiveIntensity = 1.05 + .035 * Math.sin(now * .004) + .018 * Math.sin(now * .009);
     this.place(pose); this.renderer.render(this.scene, this.camera);
     if (this.renderError || this.renderer.getContext().isContextLost()) return false;
-    context.drawImage(this.renderer.domElement, 0, 0);
+    context.drawImage(this.renderer.domElement, 0, 0, this.width, this.height);
     return true;
   }
 
