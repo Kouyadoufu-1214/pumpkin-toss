@@ -27,6 +27,8 @@ const REASON_NAMES = {
   opening: 'まだ指を開く途中です。開き切るまで、かぼちゃを持ち続けます。',
   'open-confirm': '開き切ったパーを確認中です。確認時間を下げると早く離せます。',
   'missing-hand': '手を見失っています。画面内へ戻るまで保持します。',
+  'release-recovered-open': 'パーと投げる動きは確認済み。直後の認識抜けを補って投げました。',
+  'release-recovered-swing': '開きかけの指と連続した振りを確認。認識抜け中の開き切る動きを推定して投げました。',
   'edge-hold': '手が見切れています。誤って離さず、そのまま保持します。',
   'no-receiver': '相手の顔が見つかりません。かぶる人をカメラへ。',
   direction: '相手の方向へ、もう少し大きく手を動かしてください。',
@@ -85,6 +87,7 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
   });
   const reason = element('p', 'tracking-debug__reason');
   const lastFailure = element('p', 'tracking-debug__failure'); lastFailure.hidden = true;
+  const recovery = element('p', 'tracking-debug__recovery'); recovery.hidden = true;
   const releaseLabel = element('label', 'tracking-debug__release-label', 'パーの確認');
   releaseLabel.setAttribute('for', 'tracking-debug-release');
   const release = element('progress', 'tracking-debug__release');
@@ -133,7 +136,7 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
   const feedback = element('p', 'tracking-debug__help'); feedback.setAttribute('role', 'status');
   reset.addEventListener('click', () => { change(DEFAULT_TRACKING_TUNING); feedback.textContent = '調整値を標準に戻しました。'; });
   const stored = element('p', 'tracking-debug__help', '調整値はこの端末だけに保存します。');
-  panel.append(header, intro, state, stages, reason, lastFailure, releaseLabel, release, values, historyTitle, events,
+  panel.append(header, intro, state, stages, reason, recovery, lastFailure, releaseLabel, release, values, historyTitle, events,
     controlsTitle, help, tuning, reset, feedback, stored);
   // Fullscreen shows only descendants of #exhibit. Keep the panel inside that
   // root so F2 and the close button remain usable on the venue's screen.
@@ -158,6 +161,10 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
       if (index === stage) node.setAttribute('aria-current', 'step'); else node.removeAttribute('aria-current');
     });
     reason.textContent = reasonText(snapshot.reason) || (snapshot.missing ? '手を画面内に戻してください。' : '軽く握る → 相手へ振る → しっかり開く、の順に確認します。');
+    recovery.hidden = !snapshot.lastThrowRecovery;
+    recovery.textContent = snapshot.lastThrowRecovery === 'observed-open'
+      ? '今回の投球：パー確認後の認識抜けを補完'
+      : snapshot.lastThrowRecovery === 'opening-swing' ? '今回の投球：開く途中の振りから投球を推定（全開の指は未確認）' : '';
     lastFailure.hidden = !snapshot.lastThrowReason;
     lastFailure.textContent = snapshot.lastThrowReason ? `直近の失敗：${reasonText(snapshot.lastThrowReason)}` : '';
     release.value = Math.max(0, Math.min(1, Number(snapshot.releaseProgress) || 0));

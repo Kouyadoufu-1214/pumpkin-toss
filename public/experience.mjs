@@ -10,8 +10,9 @@ import { drawWorkshopScene } from './workshop-scene.mjs';
 import { setupShareControls } from './share-link.mjs';
 import { HandMotion, SoftFollow } from './hand-motion.mjs?v=20261025-dev-tools';
 import { normalizeTrackingTuning } from './tracking-tuning.mjs';
-import { loadTrackingTuning, setupTrackingDebug } from './tracking-debug.mjs?v=20261025-soft-grip';
+import { loadTrackingTuning, setupTrackingDebug } from './tracking-debug.mjs?v=20261025-release-recovery';
 import { RenderPerformance } from './render-performance.mjs';
+import { ReleaseRecovery } from './release-recovery.mjs?v=20261025-release-recovery';
 
 const $ = id => document.getElementById(id);
 const canvas = $('screen'), c = canvas.getContext('2d'), video = $('camera-video');
@@ -31,6 +32,8 @@ let renderTime = 0;
 let rememberedRoles = { caster: null, receiver: null }, pendingRelease = null;
 let handMissing = false, holdRecovery = false;
 const handMotion = new HandMotion();
+const releaseRecovery = new ReleaseRecovery();
+let lastHandSampleAt = null, lastThrowRecovery = '';
 let trackingTuning = loadTrackingTuning(), debugControls = null;
 const softFollow = new SoftFollow(trackingTuning.smoothingMs), renderPerformance = new RenderPerformance();
 toss.configure(trackingTuning); renderPerformance.setMode(trackingTuning.quality);
@@ -97,7 +100,7 @@ function updateDeveloper(time) {
     minSpeed: trackingTuning.minSpeed, minDistance: trackingTuning.minDistance,
     releaseProgress: pendingRelease ? clamp((handSeenAt - pendingRelease.time) / Math.max(1, trackingTuning.openConfirmMs), 0, 1) : phase === 'flying' || phase === 'worn' ? 1 : 0,
     reason: debugReason,
-    lastThrowReason, quality: renderPerformance.quality }, time);
+    lastThrowReason, lastThrowRecovery, quality: renderPerformance.quality }, time);
 }
 
 function cue(step, title, detail) {
@@ -126,6 +129,7 @@ function resetRound() {
   phase = 'ready'; toss.cancel(); heldPose = flight = smoothTarget = mouseTrackedFace = null;
   mouseFaceSeenAt = null;
   rememberedRoles = { caster: null, receiver: null }; pendingRelease = null;
+  releaseRecovery.reset(); lastHandSampleAt = null; lastThrowRecovery = '';
   handMissing = holdRecovery = false;
   handMotion.reset(); softFollow.reset(); debugReason = 'waiting-hand'; lastThrowMetrics = null;
   controlHand = null; gripped = pinched = false; dwell.reset(); art.cancel(); pointer = null;
@@ -133,6 +137,7 @@ function resetRound() {
 }
 function cancelHold(message) {
   pendingRelease = null;
+  releaseRecovery.reset();
   handMissing = holdRecovery = false;
   handMotion.reset(); softFollow.reset();
   debugReason = phase === 'flying' ? 'launched' : phase === 'worn' ? 'landed' : 'cancelled';
@@ -179,6 +184,7 @@ function launch(from, target) {
   if (!target) { cancelHold(); notice('かぶる人の顔が映ってから投げよう'); return; }
   hideThrowResult();
   flight = { start: { ...from }, target: { ...target }, since: performance.now() };
+  releaseRecovery.reset(); pendingRelease = null;
   phase = 'flying'; toss.cancel(); gripped = false; handMissing = holdRecovery = false; heldPose = null; dwell.reset(); tone('throw');
   debugReason = 'launched';
 }
@@ -431,6 +437,13 @@ function acceptTracking(data) {
   // The worker sends hand observations before face work. A frame-complete
   // message must not replay a grip/release or clear a hand that is still held.
   if (!hasHands) { updateTrackingStatus(); return; }
+  // Reject replayed hand observations. Freshness for dropout inference is
+  // checked separately, so slow PCs can still use an observed open release.
+  if (!carving && phase === 'held' && (!Number.isFinite(time) || time > now
+    || lastHandSampleAt !== null && time <= lastHandSampleAt)) {
+    releaseRecovery.reset(); pendingRelease = null; updateTrackingStatus(elapsed); return;
+  }
+  if (Number.isFinite(time)) lastHandSampleAt = time;
   hands = data.hands.map((points, index) => {
     if (points?.length !== 21 || points.some(point => !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))) return null;
     const mapped = points.map(screenPoint), palm = { x: (mapped[0].x + mapped[5].x + mapped[17].x) / 3, y: (mapped[0].y + mapped[5].y + mapped[17].y) / 3 };
@@ -456,8 +469,23 @@ function acceptTracking(data) {
     updateTrackingStatus(elapsed); return;
   }
   if (!controlHand) {
-    // Retain a real opening briefly so another observed open can confirm it.
-    // Neither a missed hand nor elapsed time can confirm a release on its own.
+    // A new hand result can bridge release-time motion blur. Never do this in
+    // expireTracking or a face-only response: worker silence is not a throw.
+    if (!carving && source === 'camera' && phase === 'held' && previous && !document.hidden) {
+      const target = currentTarget();
+      const recovered = releaseRecovery.recover(time, now, target, trackingTuning.openConfirmMs);
+      if (recovered) {
+        const metrics = toss.diagnostics(recovered.point, recovered.time, target);
+        if (metrics.ok) {
+          rememberThrowCheck(metrics);
+          toss.release(recovered.point, recovered.time, target);
+          lastThrowRecovery = recovered.kind;
+          launch(displayHeldPose(now) || recovered.from, target);
+          debugReason = recovered.kind === 'observed-open' ? 'release-recovered-open' : 'release-recovered-swing';
+          updateTrackingStatus(elapsed); return;
+        }
+      }
+    }
     if (pendingRelease && time - pendingRelease.time > 320) pendingRelease = null;
     if (!carving && phase === 'held' && previous && gap <= HELD_HAND_GRACE_MS) {
       controlHand = previous; handMissing = holdRecovery = true; debugReason = 'missing-hand'; updateTrackingStatus(elapsed); return;
@@ -479,8 +507,8 @@ function acceptTracking(data) {
   }
   const gesture = controlHand.gesture, point = controlHand.palm, nearEdge = handAtCameraEdge(controlHand);
   const confidentOpen = gesture?.categoryName === 'Open_Palm' && gesture.score >= trackingTuning.gestureConfidence && gesture.score <= 1;
-  // Curling slightly can acquire a pumpkin, but release needs a fully open
-  // measured hand. The classifier cannot override visibly curled fingers.
+  // Visible-hand releases require full opening. The short recovery buffer can
+  // bridge a near-open swing only if the next hand result loses this hand.
   const cropped = nearEdge && !confidentOpen
     && (trackingInfo.handEngine !== 'hand-landmarker' || handAtCameraEdge(controlHand, 0));
   const { grip, open: fullyOpen } = controlHand.throwShape;
@@ -488,23 +516,28 @@ function acceptTracking(data) {
   if (phase === 'ready') {
     if (!grip) { debugReason = 'waiting-grip'; gripped = false; updateTrackingStatus(elapsed); return; }
     pendingRelease = null;
+    releaseRecovery.reset(); lastThrowRecovery = '';
     handMotion.reset(); softFollow.reset(); handMotion.observe(point, time); debugReason = 'gripping';
     toss.begin(point, time); phase = 'held'; heldPose = { ...restPose(time), x: point.x, y: point.y };
+    releaseRecovery.observe({ point, time, shape: controlHand.throwShape, cropped,
+      metrics: toss.diagnostics(point, time, currentTarget()), target: currentTarget(), from: heldPose }, now);
   } else if (phase === 'held') {
     if (gap > 650) {
       // Reacquire the same nearby hand without counting unseen travel as a toss.
-      pendingRelease = null; handMotion.reset(); softFollow.reset(); toss.begin(point, time); holdRecovery = true;
+      pendingRelease = null; releaseRecovery.reset(); handMotion.reset(); softFollow.reset(); toss.begin(point, time); holdRecovery = true;
     }
     handMotion.observe(point, time);
     heldPose.x = point.x; heldPose.y = point.y;
+    const targetNow = currentTarget();
+    const candidate = toss.diagnostics(point, time, targetNow);
+    releaseRecovery.observe({ point, time, shape: controlHand.throwShape, cropped,
+      metrics: candidate, target: targetNow, from: heldPose }, now);
     if (!open) {
       debugReason = cropped ? 'edge-hold' : grip ? 'gripping' : 'opening';
       pendingRelease = null;
       if (!toss.move(point, time)) toss.begin(point, time);
     }
     else {
-      const targetNow = currentTarget();
-      const candidate = toss.diagnostics(point, time, targetNow);
       if (confidentOpen && candidate.ok && candidate.fast) {
         rememberThrowCheck(candidate);
         const from = displayHeldPose(now);

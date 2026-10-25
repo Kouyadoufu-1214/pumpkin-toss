@@ -36,6 +36,7 @@ function resultHarness(overrides = {}) {
     gripped: true, pinched: true, pointer: 1,
     rememberedRoles: { caster: {}, receiver: {} }, pendingRelease: {},
     handMotion: { reset() {} },
+    releaseRecovery: { reset() {} },
     softFollow: { reset() {} },
     dwell: { reset() { calls.dwell++; } },
     toss: { cancel() { calls.toss++; } },

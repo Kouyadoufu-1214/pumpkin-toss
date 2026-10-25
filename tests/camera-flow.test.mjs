@@ -6,6 +6,7 @@ import { clamp, distance, isPinched } from '../public/interaction.mjs';
 import { resolveRoles, chooseControlHand, classifyThrowHand, TossGesture, DwellAction, HELD_HAND_GRACE_MS } from '../public/exhibit-logic.mjs';
 import { FACE_OVAL, measureFace, fallbackFacePose, manualFaceTarget } from '../public/face-fit.mjs';
 import { HandMotion, SoftFollow } from '../public/hand-motion.mjs';
+import { ReleaseRecovery } from '../public/release-recovery.mjs';
 import { RenderPerformance } from '../public/render-performance.mjs';
 import { DEFAULT_TRACKING_TUNING, normalizeTrackingTuning } from '../public/tracking-tuning.mjs';
 
@@ -82,7 +83,7 @@ function cameraHarness({ getUserMedia, play } = {}) {
   const context = vm.createContext({
     W: 1280, H: 720, $: element, canvas, video, window, document,
     art: { cancel() {}, base: null }, toss, dwell: new DwellAction(), pumpkin: undefined,
-    clamp, distance, isPinched, resolveRoles, chooseControlHand, classifyThrowHand, HandMotion, SoftFollow, RenderPerformance, HELD_HAND_GRACE_MS,
+    clamp, distance, isPinched, resolveRoles, chooseControlHand, classifyThrowHand, HandMotion, SoftFollow, ReleaseRecovery, RenderPerformance, HELD_HAND_GRACE_MS,
     normalizeTrackingTuning, loadTrackingTuning: () => ({ ...DEFAULT_TRACKING_TUNING }),
     measureFace, fallbackFacePose, manualFaceTarget,
     faceQuaternion: () => null,
@@ -684,11 +685,197 @@ test('an observed open hand can finish a throw across a short missed frame at th
   };
   frame(1000, 150); frame(1150, 270); frame(1300, 370, true);
   frame(1370, null);
-  assert.equal(h.state().phase, 'held');
-  assert.equal(h.effects.release, 0, 'a missing frame cannot confirm the release');
+  assert.equal(h.state().phase, 'flying', 'a fresh missed frame completes a previously observed open release');
+  assert.equal(h.effects.release, 1);
+  assert.equal(h.run('lastThrowRecovery'), 'observed-open');
+  assert.equal(h.run('debugReason'), 'release-recovered-open');
   frame(1450, 380, true);
   assert.equal(h.state().phase, 'flying');
-  assert.equal(h.effects.release, 1);
+  assert.equal(h.effects.release, 1, 'reacquiring the hand cannot launch the same pumpkin twice');
+  assert.equal(h.run('lastThrowRecovery'), 'observed-open');
+});
+
+function openingSwing(h, { swapped = false, positions = [150, 270, 390], bends = [4, 2, 1], faces = true } = {}) {
+  const frame = (time, x, bent, extra = {}) => {
+    h.setNow(time);
+    h.track({
+      faces: faces ? [faceLandmarks(swapped ? .25 : .75)] : [],
+      hands: x === null ? [] : [relaxedHandLandmarks(swapped ? 1280 - x : x, 400, bent)],
+      gestures: x === null ? [] : [[{ categoryName: 'None', score: .99 }]],
+      ...extra,
+    });
+  };
+  for (let i = 0; i < positions.length; i++) frame(1000 + i * 60, positions[i], bends[i]);
+  return frame;
+}
+
+test('a fast opening swing launches once when the throwing hand disappears, on either side', () => {
+  for (const swapped of [false, true]) {
+    const h = cameraHarness(); h.run(`source = 'camera'; swapped = ${swapped}; resetRound();`);
+    const frame = openingSwing(h, { swapped });
+    assert.equal(h.state().phase, 'held', 'partly open visible fingers must keep holding');
+    assert.equal(h.effects.release, 0);
+    frame(1160, null);
+    assert.equal(h.state().phase, 'flying');
+    assert.equal(h.effects.release, 1);
+    assert.equal(h.run('debugReason'), 'release-recovered-swing');
+    assert.equal(h.run('lastThrowRecovery'), 'opening-swing');
+    assert.equal(h.state().flight.target.x, swapped ? 320 : 960);
+    frame(1220, null); frame(1280, 430, 0);
+    assert.equal(h.effects.release, 1, 'continued misses and reacquisition cannot replay the recovery');
+    assert.equal(h.run('lastThrowRecovery'), 'opening-swing');
+  }
+});
+
+test('dropout recovery waits for the configured open-confirm time and rejects old full-open evidence', () => {
+  for (const age of [20, 40, 181]) {
+    const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+    const frame = openingSwing(h, { bends: [4, 2, 0] });
+    assert.equal(h.state().phase, 'held', 'the initial open sample awaits confirmation');
+    frame(1120 + age, null);
+    assert.equal(h.state().phase, age === 40 ? 'flying' : 'held', `open evidence age ${age}ms`);
+    assert.equal(h.effects.release, age === 40 ? 1 : 0);
+    if (age === 20) {
+      frame(1160, null);
+      assert.equal(h.state().phase, 'flying', 'a second fresh missing result can complete the minimum delay');
+      assert.equal(h.effects.release, 1);
+    }
+  }
+});
+
+test('dropout cannot release closed, static, slow, reverse, or receiverless swings', () => {
+  for (const scenario of [
+    { name: 'closed fingers', bends: [4, 4, 4] },
+    { name: 'static hand', positions: [150, 150, 150] },
+    { name: 'slow movement', positions: [150, 170, 190] },
+    { name: 'reverse movement', positions: [450, 330, 210] },
+    { name: 'missing receiver', faces: false },
+  ]) {
+    const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+    const frame = openingSwing(h, scenario);
+    frame(1160, null);
+    assert.equal(h.state().phase, 'held', scenario.name);
+    assert.equal(h.effects.release, 0, scenario.name);
+    assert.equal(h.state().flight, null, scenario.name);
+    assert.equal(h.run('lastThrowRecovery'), '', scenario.name);
+  }
+});
+
+test('visible partially open fingers and a visible reclose never trigger dropout recovery', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  const frame = openingSwing(h);
+  frame(1160, 430, 1);
+  assert.equal(h.state().phase, 'held', 'a strong swing does not override visible partial opening');
+  assert.equal(h.effects.release, 0);
+  frame(1200, 460, 4); frame(1240, null);
+  assert.equal(h.state().phase, 'held', 'observed reclosure invalidates previous opening evidence');
+  assert.equal(h.effects.release, 0);
+  assert.equal(h.run('lastThrowRecovery'), '');
+});
+
+test('old, delayed, or out-of-order hand results cannot recover a release', () => {
+  for (const failure of ['old', 'delayed', 'out-of-order']) {
+    const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+    const frame = openingSwing(h);
+    if (failure === 'old') frame(1321, null);
+    if (failure === 'delayed') {
+      h.setNow(1400); h.receive({ time: 1160, facesUpdated: false, hands: [] });
+      h.setNow(1440); h.receive({ time: 1440, facesUpdated: false, hands: [] });
+    }
+    if (failure === 'out-of-order') {
+      h.setNow(1140); h.receive({ time: 1100, facesUpdated: false, hands: [relaxedHandLandmarks(370, 400, 1)] });
+      frame(1160, null);
+    }
+    assert.equal(h.effects.release, 0, failure);
+    assert.equal(h.state().flight, null, failure);
+    assert.equal(h.run('lastThrowRecovery'), '', failure);
+  }
+});
+
+test('a slower camera pipeline still follows and throws from visible fingers without allowing stale dropout recovery', () => {
+  for (const completion of ['visible-open', 'missing']) {
+    const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+    const frame = (time, x, open = false) => {
+      h.setNow(time + 250);
+      h.track({ time, faces: [faceLandmarks(.75)],
+        hands: x === null ? [] : [handLandmarks(x, 400, open)],
+        gestures: x === null ? [] : [[{ categoryName: open ? 'Open_Palm' : 'Closed_Fist', score: .95 }]],
+      });
+    };
+    frame(1000, 150);
+    assert.equal(h.state().phase, 'held', 'a 250ms inference delay must still allow grabbing');
+    frame(1250, 270);
+    close(h.state().heldPose.x, 270, 'delayed chronological observations still move the held pumpkin');
+    frame(1500, 390, true);
+    assert.equal(h.state().phase, 'held');
+    close(h.state().heldPose.x, 390);
+    assert.equal(h.effects.release, 0);
+    if (completion === 'visible-open') {
+      frame(1750, 400, true);
+      assert.equal(h.state().phase, 'flying', 'two observed open samples can complete an ordinary slow-pipeline throw');
+      assert.equal(h.effects.release, 1);
+    } else {
+      frame(1560, null);
+      assert.equal(h.state().phase, 'held', 'stale evidence cannot substitute for the second open observation');
+      assert.equal(h.effects.release, 0);
+      assert.equal(h.state().flight, null);
+    }
+    assert.equal(h.run('lastThrowRecovery'), '', 'ordinary observed releases are never labeled as dropout recovery');
+  }
+});
+
+test('face-only results and render expiration cannot stand in for an observed missing hand frame', () => {
+  for (const trigger of ['face-only', 'render', 'worker-stall']) {
+    const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+    openingSwing(h);
+    h.setNow(1160);
+    if (trigger === 'face-only') h.receive({ time: 1160, facesUpdated: true, faces: [faceLandmarks(.75)] });
+    if (trigger === 'render') h.run('expireTracking(1160)');
+    if (trigger === 'worker-stall') { h.setNow(2100); h.run('expireTracking(2100)'); }
+    assert.equal(h.state().phase, 'held', trigger);
+    assert.equal(h.effects.release, 0, trigger);
+    assert.equal(h.run('lastThrowRecovery'), '', trigger);
+  }
+});
+
+test('a new round cannot inherit the previous opening swing or recovered-throw explanation', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  const frame = openingSwing(h);
+  h.run('resetRound()');
+  frame(1160, 150, 4); frame(1200, null);
+  assert.equal(h.state().phase, 'held');
+  assert.equal(h.effects.release, 0);
+  assert.equal(h.run('lastThrowRecovery'), '');
+  h.run('resetRound()');
+  const second = openingSwing(h);
+  second(1160, null);
+  assert.equal(h.run('lastThrowRecovery'), 'opening-swing');
+  h.run('resetRound()');
+  assert.equal(h.run('lastThrowRecovery'), '', 'new participants receive no previous recovery diagnosis');
+});
+
+test('developer diagnostics retain how a dropout throw was recovered after the hand stays missing', () => {
+  for (const [bent, expected] of [[0, 'observed-open'], [1, 'opening-swing']]) {
+    const h = cameraHarness(), snapshots = [];
+    h.context.snapshots = snapshots; h.context.c = {};
+    h.run(`source = 'camera'; resetRound(); debugControls = {
+      isOpen: () => true, update: snapshot => snapshots.push(snapshot), draw() {}
+    };`);
+    const frame = openingSwing(h, { bends: [4, 2, bent] });
+    frame(1160, null);
+    h.run('updateDeveloper(1160)');
+    const release = snapshots.at(-1);
+    assert.equal(release.lastThrowRecovery, expected);
+    assert.equal(release.phase, 'flying');
+    frame(1400, null);
+    h.run("phase = 'worn'; debugReason = 'landed'; updateDeveloper(1400)");
+    const landed = snapshots.at(-1);
+    assert.equal(landed.lastThrowRecovery, expected, 'landing preserves the recovery explanation');
+    assert.equal(landed.speed, release.speed);
+    assert.equal(landed.travel, release.travel);
+    assert.equal(landed.duration, release.duration);
+    assert.equal(h.effects.release, 1);
+  }
 });
 
 test('landmark-only fallback can throw with fully visible open fingers near the border', () => {

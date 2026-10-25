@@ -74,6 +74,17 @@ test('diagnostics mount within the app fullscreen root, with a body fallback for
   assert.equal(standalone.find(node => node.id === 'tracking-debug').parentElement, standalone.document.body);
 });
 
+test('release recovery remains explained after landing and distinguishes observation from inference', () => {
+  const h = harness(); h.api.toggle(true);
+  const note = h.find(node => node.className === 'tracking-debug__recovery');
+  h.api.update({ phase: 'flying', reason: 'release-recovered-open', lastThrowRecovery: 'observed-open' }, 1000);
+  assert.equal(note.hidden, false); assert.match(note.textContent, /パー確認後/);
+  h.api.update({ phase: 'worn', reason: 'landed', lastThrowRecovery: 'opening-swing' }, 1300);
+  assert.equal(note.hidden, false); assert.match(note.textContent, /推定.*未確認/);
+  h.api.update({ phase: 'ready', lastThrowRecovery: '' }, 1600);
+  assert.equal(note.hidden, true); assert.equal(note.textContent, '');
+});
+
 test('saved settings are normalized, malformed or inaccessible storage falls back, and controls persist only tuning', () => {
   assert.deepEqual(loadTrackingTuning({ getItem: () => '{broken' }), DEFAULT_TRACKING_TUNING);
   assert.deepEqual(loadTrackingTuning({ getItem() { throw Error('blocked'); } }), DEFAULT_TRACKING_TUNING);

@@ -4,9 +4,9 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const startup = readFileSync(new URL('../public/startup.js', import.meta.url), 'utf8');
-const importCall = "import('./experience.mjs?v=20261025-soft-grip')";
+const importCall = "import('./experience.mjs?v=20261025-release-recovery')";
 assert.equal(startup.split(importCall).length, 2, 'replace only the real module import boundary');
-const executable = startup.replace(importCall, "importExperience('./experience.mjs?v=20261025-soft-grip')");
+const executable = startup.replace(importCall, "importExperience('./experience.mjs?v=20261025-release-recovery')");
 
 function startupHarness(protocol = 'https:') {
   const elements = new Map(), listeners = new Map(), timers = new Map(), imports = [];
@@ -54,7 +54,7 @@ test('opening a saved HTML file gives a public URL instruction without importing
 test('HTTP and HTTPS import rejection shows a readable error and clears the wait timer', async () => {
   for (const protocol of ['http:', 'https:']) {
     const h = startupHarness(protocol);
-    assert.deepEqual(h.imports, ['./experience.mjs?v=20261025-soft-grip']);
+    assert.deepEqual(h.imports, ['./experience.mjs?v=20261025-release-recovery']);
     h.rejectImport(new TypeError('Failed to fetch dynamically imported module'));
     await Promise.resolve();
     assert.equal(h.element('startup-status').hidden, false);
