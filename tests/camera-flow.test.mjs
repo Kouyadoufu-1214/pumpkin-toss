@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import { clamp, distance, isPinched } from '../public/interaction.mjs';
 import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction } from '../public/exhibit-logic.mjs';
 import { FACE_OVAL, measureFace, fallbackFacePose, manualFaceTarget } from '../public/face-fit.mjs';
+import { HandMotion } from '../public/hand-motion.mjs';
 
 const experience = readFileSync(new URL('../public/experience.mjs', import.meta.url), 'utf8');
 const page = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
@@ -79,7 +80,7 @@ function cameraHarness({ getUserMedia, play } = {}) {
   const context = vm.createContext({
     W: 1280, H: 720, $: element, canvas, video, window, document,
     art: { cancel() {}, base: null }, toss, dwell: new DwellAction(), pumpkin: undefined,
-    clamp, distance, isPinched, resolveRoles, chooseControlHand, handGrip,
+    clamp, distance, isPinched, resolveRoles, chooseControlHand, handGrip, HandMotion,
     measureFace, fallbackFacePose, manualFaceTarget,
     faceQuaternion: () => null,
     performance: { now: () => now }, getComputedStyle: () => ({ objectFit: 'contain' }),
@@ -100,6 +101,7 @@ function cameraHarness({ getUserMedia, play } = {}) {
     setNow: time => { now = time; },
     point: (type, x, y, pointerId = 7) => canvas.listeners.get(type)?.({ clientX: x, clientY: y, pointerId }),
     track: data => context.acceptTracking({ faces: [], hands: [], matrices: [], time: now, ...data }),
+    receive: data => context.acceptTracking(data),
     start: (...args) => context.startCamera(...args),
     stop: () => context.stopCamera(),
     attach(media, oldWorker = null) {
@@ -526,6 +528,103 @@ test('recognition preserves more camera detail without upscaling a small camera 
   h.video.videoWidth = 640; h.video.videoHeight = 480; h.video.currentTime++;
   h.run('processing = false'); await h.run('requestFrame(1200)');
   assert.equal(sizes[1].resizeWidth, 640); assert.equal(sizes[1].resizeHeight, 480);
+});
+
+test('hands are applied before face work finishes without releasing the in-flight frame slot', async () => {
+  const h = cameraHarness();
+  const starting = h.start(false, 'hand'); await h.settle(); h.ready(); await starting;
+  h.run('processing = true');
+  const worker = h.workers.at(-1);
+  worker.emit({ type: 'hands', time: 1000, hands: [handLandmarks(180, 400)], gestures: [[{ categoryName: 'Closed_Fist', score: .95 }]] });
+  assert.equal(h.state().phase, 'held', 'hand interaction is usable without waiting for the face result');
+  assert.equal(h.run('processing'), true);
+  assert.equal(h.effects.begin, 1);
+  worker.emit({ type: 'result', time: 1000, facesUpdated: true, faceTime: 1000, faces: [faceLandmarks(.75)], matrices: [] });
+  assert.equal(h.run('processing'), false);
+  assert.equal(h.state().phase, 'held');
+  assert.equal(h.effects.begin, 1, 'a completion cannot replay the hand sample');
+  close(h.state().receiver.x, 960);
+});
+
+test('skipping face inference preserves a recent target but cannot renew an old face indefinitely', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  h.receive({ time: 1000, facesUpdated: true, faceTime: 1000, faces: [faceLandmarks(.75)], matrices: [] });
+  for (const time of [1200, 1600, 1800]) {
+    h.setNow(time);
+    h.receive({ type: 'hands', time, hands: [handLandmarks(180, 400)] });
+    h.receive({ type: 'result', time, facesUpdated: false, faceTime: 1000, faces: [] });
+    close(h.state().receiver.x, 960);
+  }
+  h.setNow(1900);
+  h.receive({ type: 'hands', time: 1900, hands: [handLandmarks(180, 400)] });
+  h.receive({ type: 'result', time: 1900, facesUpdated: false, faceTime: 1000, faces: [] });
+  assert.equal(h.state().receiver, null);
+  assert.equal(h.state().phase, 'held');
+});
+
+test('fast observed swings across a large frame jump can launch on a single confident open hand', () => {
+  for (const swapped of [false, true]) {
+    const h = cameraHarness(); h.run(`source = 'camera'; swapped = ${swapped}; resetRound();`);
+    const start = swapped ? 950 : 330, direction = swapped ? -1 : 1;
+    h.setNow(1000); h.track({ faces: [faceLandmarks(swapped ? .2 : .8)], hands: [handLandmarks(start, 400)],
+      handedness: [[{ categoryName: 'Right' }]], gestures: [[{ categoryName: 'Closed_Fist', score: .95 }]] });
+    h.setNow(1040); h.track({ faces: [faceLandmarks(swapped ? .2 : .8)], hands: [handLandmarks(start + direction * 50, 395)],
+      handedness: [[{ categoryName: 'Right' }]], gestures: [[{ categoryName: 'Closed_Fist', score: .95 }]] });
+    h.setNow(1120); h.track({ faces: [faceLandmarks(swapped ? .2 : .8)], hands: [handLandmarks(start + direction * 490, 360, true)],
+      handedness: [[{ categoryName: 'Right' }]], gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
+    assert.equal(h.state().phase, 'flying', 'the real hand moved farther than the old 190px reach');
+    assert.equal(h.effects.release, 1);
+  }
+});
+
+test('an uncertain open frame still waits for confirmation even during a fast swing', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  h.track({ faces: [faceLandmarks(.8)], hands: [handLandmarks(330, 400)] });
+  h.setNow(1040); h.track({ faces: [faceLandmarks(.8)], hands: [handLandmarks(380, 395)] });
+  h.setNow(1120); h.track({ faces: [faceLandmarks(.8)], hands: [handLandmarks(820, 360, true)],
+    gestures: [[{ categoryName: 'Open_Palm', score: .75 }]] });
+  assert.equal(h.state().phase, 'held');
+  assert.equal(h.effects.release, 0);
+  h.setNow(1190); h.track({ faces: [faceLandmarks(.8)], hands: [handLandmarks(825, 360, true)],
+    gestures: [[{ categoryName: 'Open_Palm', score: .75 }]] });
+  assert.equal(h.state().phase, 'flying');
+});
+
+test('an unknown distant open hand cannot create a fast swing from a stationary grip', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  h.track({ faces: [faceLandmarks(.8)], hands: [handLandmarks(440, 400)], handedness: [[{ categoryName: 'Right' }]] });
+  for (const time of [1100, 1200]) {
+    h.setNow(time); h.track({ faces: [faceLandmarks(.8)], hands: [handLandmarks(900, 400, true)],
+      handedness: [[{ categoryName: 'Right' }]], gestures: [[{ categoryName: 'Open_Palm', score: .99 }]] });
+    assert.equal(h.state().phase, 'held');
+    close(h.state().heldPose.x, 440);
+    assert.equal(h.effects.release, 0);
+  }
+});
+
+test('display compensation moves only the rendered pumpkin, never the measured throw history', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  h.setNow(1080); h.track({ time: 1000, faces: [faceLandmarks(.8)], hands: [handLandmarks(330, 400)] });
+  h.setNow(1160); h.track({ time: 1080, faces: [faceLandmarks(.8)], hands: [handLandmarks(530, 400)] });
+  const raw = h.state().heldPose.x, displayed = h.run('displayHeldPose(1160)');
+  assert.ok(displayed.x > raw && displayed.x <= raw + 160);
+  close(h.run('toss.history.at(-1).x'), raw);
+  close(h.state().heldPose.x, raw);
+  assert.equal(h.state().phase, 'held', 'predicted movement cannot release a pumpkin');
+  h.setNow(1300); h.track({ time: 1200, faces: [faceLandmarks(.8)], hands: [] });
+  assert.equal(h.effects.release, 0, 'losing a fast moving hand never invents a release');
+});
+
+test('a fresh 30fps camera frame is not throttled by the previous 40ms gate', async () => {
+  const h = cameraHarness(); let frames = 0;
+  h.context.createImageBitmap = async () => { frames++; return { close() {} }; };
+  h.run('workerReady = true; worker = { postMessage() {} };');
+  await h.run('requestFrame(1000)');
+  h.run('processing = false'); h.video.currentTime = .033;
+  await h.run('requestFrame(1033)');
+  assert.equal(frames, 2);
+  h.run('processing = false'); await h.run('requestFrame(1066)');
+  assert.equal(frames, 2, 'identical video frames must still be skipped');
 });
 
 test('face tracking never cancels or releases an active mouse drag over live video', () => {

@@ -12,10 +12,15 @@ const finitePoint = point => point && Number.isFinite(point.x) && Number.isFinit
 const MAX_SAMPLE_GAP = 650;
 const RELEASE_GRACE = 320;
 const otherHandSnapshots = new WeakMap();
+const handMotion = new WeakMap();
 
-function rememberControlHand(hand, hands) {
+function rememberControlHand(hand, hands, previous = null, elapsed = 0) {
   if (hand) otherHandSnapshots.set(hand, hands.filter(other => other !== hand)
     .map(other => ({ wrist: { ...other.wrist }, label: other.label })));
+  if (hand && previous && elapsed > 0) handMotion.set(hand, {
+    x: (hand.wrist.x - previous.wrist.x) / elapsed,
+    y: (hand.wrist.y - previous.wrist.y) / elapsed,
+  });
   return hand;
 }
 
@@ -69,13 +74,15 @@ export function handGrip(points, previous = false, gesture = null, worldPoints =
     || (previous && possibleFist && gesture.score >= .55 && folded >= 1 && extended < 2);
 }
 
-export function chooseControlHand(hands, previous, { width = 1280, swapped = false, solo = false, elapsed = 80, anchor = null, preferGrip = false } = {}) {
+export function chooseControlHand(hands, previous, { width = 1280, swapped = false, solo = false, elapsed = 80, anchor = null, preferGrip = false, fastMotion = false } = {}) {
   const valid = hands.filter(hand => finitePoint(hand.palm) && finitePoint(hand.wrist));
   if (previous) {
     if (!finitePoint(previous.wrist) || !Number.isFinite(elapsed) || elapsed > MAX_SAMPLE_GAP) return null;
     // A fast swing covers more pixels between sparse recognition results.
     // Keep the expansion bounded so a distant receiver's hand is not adopted.
     const reach = clamp(Math.max(0, elapsed) * 1.3, 190, 360);
+    const direction = swapped ? -1 : 1, velocity = handMotion.get(previous);
+    const forwardMotion = velocity && velocity.x * direction >= .2 && Math.abs(velocity.y) <= Math.abs(velocity.x);
     const others = otherHandSnapshots.get(previous) || [];
     // Left/Right labels identify hands, not people. Match all known hands
     // together so a visible peer is reserved for its own nearest track.
@@ -84,6 +91,7 @@ export function chooseControlHand(hands, previous, { width = 1280, swapped = fal
       for (const [handIndex, hand] of valid.entries()) {
         if (hand.label && track.label && hand.label !== track.label) continue;
         const moved = distance(hand.wrist, track.wrist);
+        if (trackIndex === 0 && fastMotion && moved > 340 && !forwardMotion) continue;
         if (moved < reach) edges.push({ trackIndex, handIndex, moved });
       }
     }
@@ -94,7 +102,31 @@ export function chooseControlHand(hands, previous, { width = 1280, swapped = fal
       matched.set(edge.trackIndex, valid[edge.handIndex]); used.add(edge.handIndex);
     }
     const selected = matched.get(0);
-    if (selected) return rememberControlHand(selected, valid);
+    if (selected) return rememberControlHand(selected, valid, previous, elapsed);
+    if (fastMotion) {
+      // A throw can cross several hundred pixels between camera results.
+      // Reserve the normal matches above first, especially known peers, then
+      // allow a bounded forward swing from the hand already holding a pumpkin.
+      const fastReach = Math.min(width * .44, clamp(Math.max(0, elapsed) * 4 + 240, 340, 560));
+      const predictable = velocity && velocity.x * direction > .4;
+      const predicted = predictable ? { x: previous.wrist.x + velocity.x * elapsed,
+        y: previous.wrist.y + velocity.y * elapsed } : previous.wrist;
+      const candidates = valid.filter((hand, index) => {
+        if (used.has(index) || (hand.label && previous.label && hand.label !== previous.label)) return false;
+        const dx = hand.wrist.x - previous.wrist.x, dy = hand.wrist.y - previous.wrist.y;
+        const moved = distance(hand.wrist, previous.wrist);
+        // A single distant observation after a stationary hold may belong to
+        // a newly visible receiver. The widest reach needs an existing swing.
+        return moved < fastReach && (moved <= 340 || forwardMotion)
+          && dx * direction > 0 && Math.abs(dy) <= Math.abs(dx) * .9 + 50;
+      }).map(hand => ({ hand, error: distance(hand.wrist, predicted) }))
+        .sort((a, b) => a.error - b.error);
+      // Without motion evidence, competing distant hands are ambiguous. A
+      // prediction can disambiguate them only when one is clearly closer.
+      const fast = candidates.length === 1 ? candidates[0]
+        : predictable && candidates[0]?.error < reach && candidates[1].error - candidates[0].error > 90 ? candidates[0] : null;
+      if (fast) return rememberControlHand(fast.hand, valid, previous, elapsed);
+    }
     // A held hand can be absent for several results. Keep following known
     // peers during that gap rather than letting their stale positions make
     // a gradually approaching peer look like the missing held hand.
@@ -130,10 +162,18 @@ export class TossGesture {
     this.history = this.history.filter(p => time - p.time <= MAX_SAMPLE_GAP + RELEASE_GRACE);
     return true;
   }
+  previewRelease(point, time, target) {
+    const preview = new TossGesture();
+    preview.active = this.active;
+    preview.start = this.start ? { ...this.start } : null;
+    preview.history = this.history.map(sample => ({ ...sample }));
+    return preview.release(point, time, target);
+  }
   release(point, time, target) {
     if (!this.active) return { ok: false, reason: 'cancelled' };
     if (!target || !Number.isFinite(target.x)) { this.cancel(); return { ok: false, reason: 'no-receiver' }; }
     if (time - this.history.at(-1).time > MAX_SAMPLE_GAP) { this.cancel(); return { ok: false, reason: 'slow' }; }
+    const priorSamples = this.history.slice();
     if (!this.move(point, time)) return { ok: false, reason: 'cancelled' };
     const history = this.history, start = this.start;
     const direction = Math.sign(target.x - start.x) || 1;
@@ -142,10 +182,28 @@ export class TossGesture {
     if (toward < 24) return { ok: false, reason: 'direction' };
     const recent = history.filter(p => time - p.time <= RELEASE_GRACE);
     if (recent.some(p => (p.x - point.x) * direction > 32)) return { ok: false, reason: 'direction' };
+    // The opening observation cannot be the only evidence of a swing: a new
+    // distant hand can otherwise look like a fast jump from a stationary hold.
+    // Require forward motion already recorded before this release position.
+    let priorForward = false;
+    for (let j = 1; j < priorSamples.length; j++) {
+      const last = priorSamples[j];
+      if (time - last.time > 240) continue;
+      for (let i = j - 1; i >= 0; i--) {
+        const first = priorSamples[i], duration = last.time - first.time;
+        if (duration > 240) break;
+        if (duration < 25) continue;
+        const travel = (last.x - first.x) * direction;
+        if (travel >= 24 && travel / (duration / 1000) >= 200 && travel >= Math.abs(last.y - first.y)) {
+          priorForward = true; break;
+        }
+      }
+      if (priorForward) break;
+    }
     // Opening the hand can be recognized one frame after the swing stops.
     // Look for recent forward motion, without counting a stationary release
     // as movement or averaging a fast flick away with the preceding hold.
-    let speed = 0;
+    let speed = 0, fast = false;
     for (let j = 1; j < history.length; j++) {
       const last = history[j];
       if (time - last.time > RELEASE_GRACE || (last.x - history[j - 1].x) * direction < 2) continue;
@@ -155,11 +213,21 @@ export class TossGesture {
         // limit; several observations only describe a flick over a short span.
         if (duration < 25 || (j - i > 1 && duration > 240)) continue;
         const travel = (last.x - first.x) * direction;
-        if (travel >= 24) speed = Math.max(speed, travel / (duration / 1000));
+        const observedSpeed = travel / (duration / 1000);
+        if (travel >= 24) speed = Math.max(speed, observedSpeed);
+        // A confident open-hand observation can finish a clearly fast swing
+        // immediately. Old motion or a mostly vertical movement cannot supply
+        // that stronger evidence for bypassing release confirmation.
+        if (priorForward && travel >= 160 && observedSpeed >= 1400 && travel >= Math.abs(last.y - first.y)
+          && time - last.time <= 160) fast = true;
       }
     }
-    if (speed < 200 || time - start.time < 90 || distance(start, point) < 40) return { ok: false, reason: 'slow' };
-    return { ok: true };
+    const duration = time - start.time;
+    // A real quick flick must not fail just because it finishes within 90ms.
+    // Require substantially more travel and speed for that short observation.
+    const quickFlick = duration >= 35 && toward >= 100 && speed >= 1000;
+    if (speed < 200 || (duration < 90 && !quickFlick) || distance(start, point) < 40) return { ok: false, reason: 'slow' };
+    return { ok: true, fast };
   }
 }
 

@@ -7,6 +7,8 @@ catch (error) { bundleError = String(error); }
 let faceTask = null, handTask = null;
 let faceEngine = 'unavailable', handEngine = 'unavailable';
 let faceError = null, handError = null, handWarning = null;
+let faceTime = null;
+const FACE_INTERVAL_WITH_HANDS = 160;
 const status = () => ({ faceEngine, handEngine, faceError, handError, handWarning });
 const asset = name => new URL(`./vendor/${name}`, self.location.href).href;
 function closeTask(task) {
@@ -16,6 +18,7 @@ function closeTask(task) {
 async function initialize({ detectHands = true, numHands = 4 }) {
   closeTask(faceTask); closeTask(handTask);
   faceTask = handTask = null;
+  faceTime = null;
   faceEngine = 'unavailable'; handEngine = detectHands ? 'unavailable' : 'disabled';
   faceError = handError = handWarning = null;
   let files;
@@ -78,18 +81,10 @@ self.onmessage = async ({ data }) => {
   }
   if (data.type === 'frame') {
     let faces = [], matrices = [], hands = [], worldHands = [], handedness = [], gestures = [];
-    let statusChanged = false;
+    let statusChanged = false, facesUpdated = false, handMs = 0, faceMs = 0;
     try {
-      if (faceTask) {
-        try {
-          const result = faceTask.detectForVideo(data.bitmap, data.time);
-          faces = result.faceLandmarks; matrices = result.facialTransformationMatrixes;
-        } catch (error) {
-          faceError = String(error); faceEngine = 'unavailable';
-          closeTask(faceTask); faceTask = null; statusChanged = true;
-        }
-      }
       if (handTask) {
+        const started = performance.now();
         try {
           const result = handEngine === 'gesture-recognizer'
             ? handTask.recognizeForVideo(data.bitmap, data.time)
@@ -100,9 +95,27 @@ self.onmessage = async ({ data }) => {
           handError = String(error); handEngine = 'unavailable';
           closeTask(handTask); handTask = null; statusChanged = true;
         }
+        handMs = Math.max(0, performance.now() - started);
+        // Deliver the hand while the worker is still free to spend time on
+        // faces. The final result, not this message, releases the frame slot.
+        self.postMessage({ type: 'hands', hands, worldHands, handedness, gestures, time: data.time, handMs, ...status() });
+      }
+      if (faceTask && (!handTask || faceTime === null || data.time - faceTime >= FACE_INTERVAL_WITH_HANDS)) {
+        const started = performance.now();
+        facesUpdated = true; faceTime = data.time;
+        try {
+          const result = faceTask.detectForVideo(data.bitmap, data.time);
+          faces = result.faceLandmarks; matrices = result.facialTransformationMatrixes;
+        } catch (error) {
+          faceError = String(error); faceEngine = 'unavailable';
+          closeTask(faceTask); faceTask = null; statusChanged = true;
+        }
+        faceMs = Math.max(0, performance.now() - started);
       }
       if (statusChanged) self.postMessage({ type: 'status', ...status() });
-      self.postMessage({ type: 'result', faces, matrices, hands, worldHands, handedness, gestures, time: data.time, ...status() });
+      // Skipped face frames must not refresh face age in the application.
+      // Durations are measured in this worker; capture times belong to main.
+      self.postMessage({ type: 'result', facesUpdated, faces, matrices, faceTime, faceMs, handMs, time: data.time, ...status() });
     } finally { data.bitmap.close(); }
   }
 };

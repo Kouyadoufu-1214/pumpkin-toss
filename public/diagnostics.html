@@ -12,8 +12,8 @@
 const button = document.getElementById('run'), result = document.getElementById('result');
 button.addEventListener('click', () => {
   button.disabled = true; result.textContent = 'モデルを読み込み中…';
-  const worker = new Worker('./tracker-worker.js?v=20261025-recognition');
-  let state;
+  const worker = new Worker('./tracker-worker.js?v=20261025-fast-throw');
+  let state, handCount = 0;
   const names = { 'face-landmarker':'顔検出', 'gesture-recognizer':'グー／パー＋手の検出', 'hand-landmarker':'手の検出（代替モデル）', unavailable:'利用不可', disabled:'省略（マウス用）' };
   const description = data => `顔: ${names[data.faceEngine] || data.faceEngine}\n手: ${names[data.handEngine] || data.handEngine}`;
   const finish = text => { result.textContent = text; worker.terminate(); button.disabled = false; clearTimeout(timer); };
@@ -27,11 +27,14 @@ button.addEventListener('click', () => {
       const ctx = blank.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 640, 480);
       const bitmap = await createImageBitmap(blank);
       worker.postMessage({type:'frame', bitmap, time:performance.now()}, [bitmap]);
+    } else if (data.type === 'hands') {
+      handCount = data.hands.length;
+      state = { ...state, ...data };
     } else if (data.type === 'result') {
       state = { ...state, ...data };
       const complete = state.faceEngine === 'face-landmarker' && (state.handEngine === 'gesture-recognizer' || state.handEngine === 'disabled');
       const errors = [state.faceError && `顔のエラー: ${state.faceError}`, state.handError && `手のエラー: ${state.handError}`, state.handWarning && `ジェスチャーモデル: ${state.handWarning}`].filter(Boolean);
-      finish(`${complete ? '成功' : '一部の検出が利用できません'}\n${description(state)}\n検出結果: 顔 ${data.faces.length}人 / 手 ${data.hands.length}本（白紙なので両方0が正常）\n${errors.join('\n')}\n実際の顔や手の認識精度は、体験画面で確認してください。`);
+      finish(`${complete ? '成功' : '一部の検出が利用できません'}\n${description(state)}\n検出結果: 顔 ${data.faces.length}人 / 手 ${handCount}本（白紙なので両方0が正常）\n手の処理 ${Math.round(data.handMs || 0)}ms / 顔の処理 ${Math.round(data.faceMs || 0)}ms\n${errors.join('\n')}\n実際の顔や手の認識精度は、体験画面で確認してください。`);
     } else if (data.type === 'status') {
       state = { ...state, ...data };
     } else if (data.type === 'error') finish(`失敗: ${data.message}`);

@@ -40,6 +40,69 @@ test('sparse tracking follows a fast held hand while still rejecting distant, mi
   assert.equal(chooseControlHand([], previous, { elapsed: 300 }), null, 'a missing hand must never be invented');
 });
 
+test('fast-motion tracking accepts large forward swings while ordinary selection stays bounded', () => {
+  for (const swapped of [false, true]) {
+    const hand = (x, y = 450, label = 'Left') => ({ palm: { x: swapped ? 1280 - x : x, y },
+      wrist: { x: swapped ? 1280 - x : x, y: y + 30 }, label });
+    for (const [elapsed, travel] of [[80, 250], [150, 300], [80, 500], [250, 450], [500, 500]]) {
+      const held = hand(350), moving = hand(350 + travel);
+      if (travel > 340) {
+        const prior = chooseControlHand([hand(300)], null, { swapped });
+        assert.equal(chooseControlHand([held], prior, { swapped, elapsed: 40 }), held);
+      }
+      assert.equal(chooseControlHand([moving], held, { elapsed, swapped }), null);
+      assert.equal(chooseControlHand([moving], held, { elapsed, swapped, fastMotion: true }), moving);
+    }
+    const held = hand(440), options = { elapsed: 300, swapped, fastMotion: true };
+    assert.equal(chooseControlHand([hand(1050)], held, options), null, 'a previously unknown distant receiver remains out of reach');
+    assert.equal(chooseControlHand([hand(900, 450, 'Right')], held, options), null);
+    assert.equal(chooseControlHand([hand(900)], held, { ...options, elapsed: 651 }), null);
+    assert.equal(chooseControlHand([hand(440, 950)], held, options), null, 'a vertical leap is not a forward swing');
+    assert.equal(chooseControlHand([hand(-60)], held, options), null, 'the expanded reach is only for the throwing direction');
+    assert.equal(chooseControlHand([hand(900)], held, { ...options, width: 800 }), null, 'the bound scales down for a smaller stage');
+  }
+});
+
+test('fast-motion tracking reserves known peers before following a large swing', () => {
+  const hand = x => ({ palm: { x, y: 450 }, wrist: { x, y: 480 }, label: 'Left' });
+  const beginning = chooseControlHand([hand(390), hand(1050)], null);
+  const first = chooseControlHand([hand(440), hand(1050)], beginning, { elapsed: 40 });
+  const moving = hand(940), peer = hand(1040);
+  const second = chooseControlHand([peer, moving], first, { elapsed: 100, fastMotion: true });
+  assert.equal(second, moving);
+  assert.equal(chooseControlHand([hand(1020)], second, { elapsed: 100, fastMotion: true }), null);
+  assert.equal(chooseControlHand([hand(990)], second, { elapsed: 300, fastMotion: true }), null);
+});
+
+test('the widest hand reach needs prior forward motion and cannot adopt an unknown receiver after a stationary hold', () => {
+  for (const swapped of [false, true]) {
+    const hand = x => ({ palm: { x: swapped ? 1280 - x : x, y: 450 },
+      wrist: { x: swapped ? 1280 - x : x, y: 480 }, label: 'Left' });
+    const initial = chooseControlHand([hand(440)], null, { swapped });
+    const stationary = chooseControlHand([hand(440)], initial, { elapsed: 40, swapped });
+    for (const elapsed of [100, 200, 500]) {
+      assert.equal(chooseControlHand([hand(900)], stationary, { elapsed, swapped, fastMotion: true }), null);
+    }
+    assert.equal(chooseControlHand([hand(790)], stationary, { elapsed: 300, swapped, fastMotion: true }), null,
+      'the cold-start cap also applies when the older sparse-frame reach would allow 350 pixels');
+    const beginning = chooseControlHand([hand(330)], null, { swapped });
+    const forward = chooseControlHand([hand(380)], beginning, { elapsed: 40, swapped, fastMotion: true });
+    const swinging = hand(820);
+    assert.equal(chooseControlHand([swinging], forward, { elapsed: 80, swapped, fastMotion: true }), swinging);
+    const backwards = chooseControlHand([hand(350)], chooseControlHand([hand(390)], null, { swapped }), { elapsed: 40, swapped });
+    assert.equal(chooseControlHand([hand(800)], backwards, { elapsed: 80, swapped, fastMotion: true }), null);
+  }
+});
+
+test('fast-motion tracking refuses competing unknown hands unless prior motion distinguishes them', () => {
+  const hand = x => ({ palm: { x, y: 450 }, wrist: { x, y: 480 }, label: 'Left' });
+  assert.equal(chooseControlHand([hand(700), hand(850)], hand(350), { elapsed: 80, fastMotion: true }), null);
+  const first = chooseControlHand([hand(350)], null);
+  const second = chooseControlHand([hand(450)], first, { elapsed: 80, fastMotion: true });
+  const continuing = hand(800), unknown = hand(1000);
+  assert.equal(chooseControlHand([unknown, continuing], second, { elapsed: 250, fastMotion: true }), continuing);
+});
+
 test('acquiring a hand prefers the pumpkin position without selecting a hand from the receiver side', () => {
   const hand = x => ({ palm: { x, y: 450 }, wrist: { x, y: 480 } });
   const far = hand(180), near = hand(490), otherSide = hand(720);
@@ -62,15 +125,16 @@ test('losing the held hand does not adopt a previously visible receiver hand wit
 });
 
 test('a peer approaching over several missed held-hand frames never becomes the held hand', () => {
-  for (const swapped of [false, true]) {
+  for (const { swapped, fastMotion } of [{ swapped: false, fastMotion: false }, { swapped: true, fastMotion: false },
+    { swapped: false, fastMotion: true }, { swapped: true, fastMotion: true }]) {
     const hand = x => ({ palm: { x: swapped ? 1280 - x : x, y: 450 },
       wrist: { x: swapped ? 1280 - x : x, y: 480 }, label: 'Left' });
     const first = chooseControlHand([hand(440), hand(950)], null, { swapped });
     const held = chooseControlHand([hand(700), hand(950)], first, { elapsed: 300 });
     assert.ok(held, 'the genuine held hand can move quickly while the peer remains visible');
-    assert.equal(chooseControlHand([hand(850)], held, { elapsed: 250 }), null);
-    assert.equal(chooseControlHand([], held, { elapsed: 375 }), null, 'an empty result preserves known peers');
-    assert.equal(chooseControlHand([hand(790)], held, { elapsed: 500 }), null,
+    assert.equal(chooseControlHand([hand(850)], held, { elapsed: 250, swapped, fastMotion }), null);
+    assert.equal(chooseControlHand([], held, { elapsed: 375, swapped, fastMotion }), null, 'an empty result preserves known peers');
+    assert.equal(chooseControlHand([hand(790)], held, { elapsed: 500, swapped, fastMotion }), null,
       'a peer must stay a peer even when it approaches the last held-hand position');
   }
 });
@@ -123,6 +187,92 @@ test('only a deliberate throw toward an existing receiver launches', () => {
 test('throwing to the left is supported when roles are swapped', () => {
   const g = new TossGesture(); g.begin({ x: 900, y: 450 }, 0);
   assert.equal(g.release({ x: 770, y: 400 }, 200, { x: 300 }).ok, true);
+});
+
+test('a substantial quick flick may finish within 90 ms without allowing small or reversed movements', () => {
+  for (const direction of [1, -1]) {
+    const start = { x: direction > 0 ? 350 : 900, y: 450 }, target = { x: start.x + 600 * direction };
+    const attempt = (time, travel, dy = 0) => {
+      const g = new TossGesture(); g.begin(start, 1000);
+      return g.release({ x: start.x + travel * direction, y: start.y + dy }, 1000 + time, target);
+    };
+    for (const duration of [60, 80]) {
+      assert.equal(attempt(duration, 350, -30).ok, true);
+      assert.equal(attempt(duration, 50).ok, false, 'a short wobble is insufficient');
+      assert.equal(attempt(duration, 0).ok, false);
+      assert.equal(attempt(duration, -350).ok, false);
+      assert.equal(attempt(duration, 30, -300).ok, false, 'fast vertical motion is insufficient');
+    }
+    assert.equal(attempt(20, 350).ok, false, 'an implausibly short observation remains rejected');
+  }
+});
+
+test('release preview leaves the hold and samples intact until the actual release', () => {
+  const g = new TossGesture(); g.begin({ x: 350, y: 450 }, 1000);
+  g.move({ x: 390, y: 440 }, 1030);
+  const before = structuredClone({ active: g.active, start: g.start, history: g.history });
+  const preview = g.previewRelease({ x: 700, y: 410 }, 1080, { x: 1000 });
+  assert.deepEqual(preview, { ok: true, fast: true });
+  assert.deepEqual({ active: g.active, start: g.start, history: g.history }, before);
+  assert.equal(g.previewRelease({ x: 700, y: 410 }, 1080, null).ok, false);
+  assert.deepEqual({ active: g.active, start: g.start, history: g.history }, before, 'failed previews cannot cancel the hold either');
+  assert.deepEqual(g.release({ x: 700, y: 410 }, 1080, { x: 1000 }), preview);
+  assert.equal(g.active, false); assert.deepEqual(g.history, []);
+});
+
+test('fast release evidence requires a substantial recent forward swing in either direction', () => {
+  for (const direction of [1, -1]) {
+    const start = { x: direction > 0 ? 350 : 900, y: 450 }, target = { x: start.x + 600 * direction };
+    const attempt = (time, travel, dy = 0) => {
+      const g = new TossGesture(); g.begin(start, 1000);
+      if (time >= 60) g.move({ x: start.x + 30 * direction, y: start.y - 5 }, 1030);
+      return g.previewRelease({ x: start.x + travel * direction, y: start.y + dy }, 1000 + time, target);
+    };
+    assert.deepEqual(attempt(80, 350, -30), { ok: true, fast: true });
+    assert.equal(attempt(120, 180).fast, true);
+    assert.deepEqual(attempt(200, 180), { ok: true, fast: false }, 'ordinary throws keep two-observation confirmation');
+    assert.equal(attempt(80, 120).fast, false, 'a short but quick movement is not strong enough evidence');
+    assert.equal(attempt(120, 180, -400).fast, false, 'predominantly vertical movement cannot bypass confirmation');
+    assert.equal(attempt(80, -350).ok, false);
+    assert.equal(attempt(20, 350).ok, false);
+    assert.equal(attempt(100, 0).ok, false);
+    const stopped = new TossGesture(); stopped.begin(start, 1000);
+    stopped.move({ x: start.x + 350 * direction, y: 420 }, 1080);
+    assert.equal(stopped.previewRelease({ x: start.x + 350 * direction, y: 420 }, 1240, target).fast, true);
+    assert.deepEqual(stopped.previewRelease({ x: start.x + 350 * direction, y: 420 }, 1241, target), { ok: true, fast: false },
+      'a previous fast swing expires before an unrelated open-hand classification');
+  }
+});
+
+test('a single large jump from a stationary hold cannot bypass open-hand confirmation', () => {
+  for (const direction of [1, -1]) {
+    const start = { x: direction > 0 ? 440 : 840, y: 450 }, target = { x: start.x + 600 * direction };
+    for (const stationarySample of [false, true]) {
+      const g = new TossGesture(); g.begin(start, 1000);
+      if (stationarySample) g.move(start, 1050);
+      const point = { x: start.x + 460 * direction, y: 450 };
+      assert.deepEqual(g.previewRelease(point, 1100, target), { ok: true, fast: false });
+      assert.equal(g.active, true, 'normal two-observation confirmation can still finish the throw');
+    }
+  }
+});
+
+test('tiny, stale, vertical, and reverse prior movements cannot certify a later fast jump', () => {
+  const start = { x: 350, y: 450 }, target = { x: 1000 };
+  for (const [point, movedAt, openedAt] of [
+    [{ x: 360, y: 450 }, 1030, 1100],
+    [{ x: 390, y: 450 }, 1010, 1100],
+    [{ x: 390, y: 450 }, 1050, 1300],
+    [{ x: 390, y: 550 }, 1050, 1150],
+    [{ x: 310, y: 450 }, 1050, 1150],
+  ]) {
+    const g = new TossGesture(); g.begin(start, 1000); g.move(point, movedAt);
+    assert.deepEqual(g.previewRelease({ x: 800, y: 450 }, openedAt, target), { ok: true, fast: false });
+  }
+  const highRate = new TossGesture(); highRate.begin(start, 1000);
+  for (let step = 1; step <= 4; step++) highRate.move({ x: 350 + step * 10, y: 450 }, 1000 + step * 8);
+  assert.equal(highRate.previewRelease({ x: 750, y: 450 }, 1080, target).fast, true,
+    'several short camera intervals can together establish earlier forward motion');
 });
 
 test('a deliberate throw can be recognized from sparse frames beyond the old 240 ms history window', () => {
