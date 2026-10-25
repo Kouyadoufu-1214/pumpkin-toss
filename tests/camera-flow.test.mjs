@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { clamp, distance, isPinched } from '../public/interaction.mjs';
-import { resolveRoles, chooseControlHand, handOpen, TossGesture, DwellAction, HELD_HAND_GRACE_MS } from '../public/exhibit-logic.mjs';
+import { resolveRoles, chooseControlHand, classifyThrowHand, TossGesture, DwellAction, HELD_HAND_GRACE_MS } from '../public/exhibit-logic.mjs';
 import { FACE_OVAL, measureFace, fallbackFacePose, manualFaceTarget } from '../public/face-fit.mjs';
 import { HandMotion, SoftFollow } from '../public/hand-motion.mjs';
 import { RenderPerformance } from '../public/render-performance.mjs';
@@ -82,7 +82,7 @@ function cameraHarness({ getUserMedia, play } = {}) {
   const context = vm.createContext({
     W: 1280, H: 720, $: element, canvas, video, window, document,
     art: { cancel() {}, base: null }, toss, dwell: new DwellAction(), pumpkin: undefined,
-    clamp, distance, isPinched, resolveRoles, chooseControlHand, handOpen, HandMotion, SoftFollow, RenderPerformance, HELD_HAND_GRACE_MS,
+    clamp, distance, isPinched, resolveRoles, chooseControlHand, classifyThrowHand, HandMotion, SoftFollow, RenderPerformance, HELD_HAND_GRACE_MS,
     normalizeTrackingTuning, loadTrackingTuning: () => ({ ...DEFAULT_TRACKING_TUNING }),
     measureFace, fallbackFacePose, manualFaceTarget,
     faceQuaternion: () => null,
@@ -307,6 +307,20 @@ function handLandmarks(x, y, open = false) {
   return points.map(point => ({ x: point.x / 1280, y: point.y / 720 }));
 }
 
+// A gentle finger bend, well short of the folded fist used above. Finger
+// chains turn 35 degrees per joint while the palm and wrist remain fixed.
+function relaxedHandLandmarks(x, y, bentFingers = 4) {
+  const points = handLandmarks(x, y, true).map(p => ({ x: p.x * 1280, y: p.y * 720 }));
+  for (const [i, base] of [5, 9, 13, 17].entries()) {
+    if (i >= bentFingers) continue;
+    for (const [step, length] of [[2, 23], [3, 25]]) {
+      const angle = (step - 1) * 35 * Math.PI / 180, previous = points[base + step - 1];
+      points[base + step] = { x: previous.x + length * Math.sin(angle), y: previous.y - length * Math.cos(angle) };
+    }
+  }
+  return points.map(point => ({ x: point.x / 1280, y: point.y / 720 }));
+}
+
 test('a tracked face disappearing during flight or after landing does not become a default target', () => {
   for (const phase of ['flying', 'worn']) {
     const h = cameraHarness(); h.run("source = 'mouse-camera';");
@@ -453,7 +467,7 @@ test('a hand anywhere on the throwing side holds immediately and can open later 
   assert.equal(h.state().flight.target.x, 960);
 });
 
-test('an always-open palm holds still and then throws without any fist on either side', () => {
+test('an already open palm cannot acquire or throw until the hand curls slightly on either side', () => {
   for (const swapped of [false, true]) {
     const h = cameraHarness(); h.run(`source = 'camera'; swapped = ${swapped}; resetRound();`);
     const frame = (time, x) => {
@@ -463,18 +477,43 @@ test('an always-open palm holds still and then throws without any fist on either
     };
     for (const time of [1000, 1200, 1400, 1600, 1800, 2000]) {
       frame(time, 150);
-      assert.equal(h.state().phase, 'held');
+      assert.equal(h.state().phase, 'ready');
       assert.equal(h.run('pendingRelease'), null, 'stationary open palm never starts release confirmation');
       assert.equal(h.effects.release, 0);
     }
     frame(2150, 270);
-    assert.equal(h.state().phase, 'held');
-    assert.ok(h.run('pendingRelease'), 'a qualifying open-palm swing starts confirmation');
+    assert.equal(h.state().phase, 'ready');
     frame(2250, 360);
+    assert.equal(h.state().phase, 'ready');
+    assert.equal(h.effects.release, 0);
+    assert.equal(h.run('debugReason'), 'waiting-grip');
+    h.setNow(2400); h.track({ faces: [faceLandmarks(swapped ? .25 : .75)],
+      hands: [relaxedHandLandmarks(swapped ? 1280 - 360 : 360, 400)],
+      gestures: [[{ categoryName: 'None', score: .95 }]] });
+    assert.equal(h.state().phase, 'held', 'a slight curl acquires without a Closed_Fist classification');
+    frame(2550, 480); frame(2650, 560);
     assert.equal(h.state().phase, 'flying');
-    assert.equal(h.effects.release, 1);
     assert.equal(h.state().flight.target.x, swapped ? 320 : 960);
   }
+});
+
+test('partly opening a relaxed grip never releases, even with a misleading confident palm label', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  const frame = (time, x, bent, label = 'Open_Palm') => {
+    h.setNow(time); h.track({ faces: [faceLandmarks(.75)], hands: [relaxedHandLandmarks(x, 400, bent)],
+      gestures: [[{ categoryName: label, score: .99 }]] });
+  };
+  frame(1000, 150, 4, 'None');
+  assert.equal(h.state().phase, 'held');
+  for (const [time, x, bent] of [[1150, 270, 2], [1300, 400, 1], [1450, 520, 1]]) {
+    frame(time, x, bent);
+    assert.equal(h.state().phase, 'held');
+    assert.equal(h.effects.release, 0);
+    assert.equal(h.run('pendingRelease'), null, 'every finger must open before release confirmation can start');
+  }
+  frame(1600, 650, 0); frame(1700, 680, 0);
+  assert.equal(h.state().phase, 'flying');
+  assert.equal(h.effects.release, 1);
 });
 
 test('unknown hand shapes can hold and move, but only a positive palm can release', () => {
@@ -490,11 +529,11 @@ test('unknown hand shapes can hold and move, but only a positive palm can releas
   assert.equal(h.state().phase, 'flying', 'positive finger geometry works without a fist label or palm classifier');
 });
 
-test('a palm present before the receiver appears stays held and can throw without re-gripping', () => {
+test('a relaxed grip before the receiver appears can open and throw after the face is detected', () => {
   const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
   for (const time of [1000, 1200, 1400]) {
-    h.setNow(time); h.track({ hands: [handLandmarks(150, 400, true)],
-      gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
+    h.setNow(time); h.track({ hands: [relaxedHandLandmarks(150, 400)],
+      gestures: [[{ categoryName: 'None', score: .95 }]] });
     assert.equal(h.state().phase, 'held');
     assert.equal(h.state().flight, null);
   }
@@ -511,6 +550,7 @@ test('a failed slow palm swing keeps its history so a later faster swing works w
     h.setNow(time); h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(x, 400, true)],
       gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
   };
+  h.setNow(900); h.track({ faces: [faceLandmarks(.75)], hands: [relaxedHandLandmarks(150, 400)] });
   frame(1000, 150); frame(1400, 180); frame(1800, 210);
   assert.equal(h.state().phase, 'held'); assert.equal(h.effects.release, 0);
   frame(1950, 330); frame(2050, 420);
@@ -598,8 +638,8 @@ test('a hand returning near the camera edge after a one-second gap can continue 
 
 test('an open hand returning after a long gap keeps its pumpkin but cannot throw from unseen motion', () => {
   const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
-  h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(100, 400, true)],
-    gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
+  h.track({ faces: [faceLandmarks(.75)], hands: [relaxedHandLandmarks(100, 400)],
+    gestures: [[{ categoryName: 'None', score: .95 }]] });
   h.setNow(1800); h.track({ faces: [faceLandmarks(.75)] });
   for (const time of [2100, 2200, 2300]) {
     h.setNow(time); h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(220, 400, true)],

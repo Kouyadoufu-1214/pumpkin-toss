@@ -112,7 +112,7 @@ test('diagnostics do no DOM work while closed and update at most five times a se
   assert.equal(h.find(node => node.id === 'tracking-debug-release').value, .5);
   assert.ok(h.find(node => node.className === 'tracking-debug__failure').textContent.includes('直近の失敗：速度・距離・観測時間が条件未達'));
   const current = h.find(node => node.attributes.get('aria-current') === 'step');
-  assert.equal(current.textContent, 'パーで離す');
+  assert.equal(current.textContent, 'しっかり開く');
   for (let i = 0; i < 20; i++) h.api.update({ phase: 'held', reason: `reason ${i}` }, 410 + i * 200);
   assert.equal(history.children.length, 6);
   h.api.toggle(false); const closed = h.writes();
@@ -139,17 +139,41 @@ test('record preserves fast inference transitions without DOM work and ignores e
   assert.equal(history.children.length, 3);
 });
 
-test('an already open palm waits for a swing instead of displaying a release', () => {
+test('an initially open palm waits for a light grip and only a held hand can display the opening step', () => {
   const h = harness();
   h.api.toggle(true);
-  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, '手を映す');
-  assert.equal(h.find(node => node.className === 'tracking-debug__state').textContent, '手を待っています');
-  h.api.update({ phase: 'held', reason: 'gripping', gesture: 'Open_Palm', releaseProgress: 0 }, 200);
+  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, '軽く握る');
+  assert.equal(h.find(node => node.className === 'tracking-debug__state').textContent, '軽く握るのを待っています');
+  h.api.update({ phase: 'ready', reason: 'waiting-grip', gesture: 'Open_Palm', releaseProgress: 0 }, 200);
+  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, '軽く握る');
+  assert.equal(h.find(node => node.id === 'tracking-debug-release').value, 0);
+  assert.ok(h.find(node => node.className === 'tracking-debug__reason').textContent.includes('手を少し丸めると'));
+  h.api.update({ phase: 'held', reason: 'gripping', gesture: 'None', releaseProgress: 0 }, 400);
   assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, '相手へ振る');
   assert.equal(h.find(node => node.id === 'tracking-debug-release').value, 0);
-  assert.ok(h.find(node => node.className === 'tracking-debug__reason').textContent.includes('手を認識して保持'));
-  h.api.update({ phase: 'held', reason: 'open-confirm', gesture: 'Open_Palm', releaseProgress: .5 }, 400);
-  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, 'パーで離す');
+  assert.ok(h.find(node => node.className === 'tracking-debug__reason').textContent.includes('ゆるく握った手を認識'));
+  h.api.update({ phase: 'held', reason: 'opening', gesture: 'Open_Palm', releaseProgress: 0 }, 600);
+  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, 'しっかり開く');
+  assert.equal(h.find(node => node.id === 'tracking-debug-release').value, 0, 'partly open fingers do not imply release confirmation');
+  assert.ok(h.find(node => node.className === 'tracking-debug__reason').textContent.includes('開き切るまで'));
+  h.api.update({ phase: 'held', reason: 'open-confirm', gesture: 'Open_Palm', releaseProgress: .5 }, 800);
+  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, 'しっかり開く');
+  assert.equal(h.find(node => node.id === 'tracking-debug-release').value, .5);
+});
+
+test('geometric finger openness is shown independently of the raw model classification and confidence', () => {
+  const h = harness();
+  h.api.toggle(true);
+  const metric = label => h.find(node => node.tagName === 'DT' && node.textContent === label).parentElement.children[1];
+  assert.equal(metric('指の開き具合').textContent, '—');
+  h.api.update({ phase: 'held', reason: 'opening', gesture: 'Open_Palm', confidence: .98, openness: .72 }, 200);
+  assert.equal(metric('モデルの手の形').textContent, 'パー');
+  assert.equal(metric('形の信頼度').textContent, '98%');
+  assert.equal(metric('指の開き具合').textContent, '72%');
+  h.api.update({ phase: 'held', reason: 'open-confirm', gesture: 'Open_Palm', openness: 1 }, 400);
+  assert.equal(metric('指の開き具合').textContent, '100%');
+  h.api.update({ phase: 'ready', reason: 'waiting-hand', openness: NaN }, 600);
+  assert.equal(metric('指の開き具合').textContent, '—', 'missing geometry cannot look like measured closed fingers');
 });
 
 test('bone overlay uses raw mapped points only while enabled, preserves the canvas, and never draws a cached missing hand', () => {

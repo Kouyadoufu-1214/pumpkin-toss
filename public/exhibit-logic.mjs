@@ -111,7 +111,58 @@ export function handOpen(points, gesture = null, worldPoints = null, options = {
   return extended >= 3;
 }
 
-export function chooseControlHand(hands, previous, { width = 1280, swapped = false, solo = false, elapsed = 80, anchor = null, preferGrip = false, gripOptions = null, fastMotion = false, recoverHeld = false } = {}) {
+// Throwing uses a deliberately asymmetric pose: a loose curl acquires the
+// pumpkin, but all fingers must straighten before release. Unlike handGrip /
+// handOpen, model labels cannot override observed finger geometry here.
+// openness is a 0..1 mean extension measure for diagnostics, not a release
+// threshold; bentFingers / extendedFingers count the four non-thumb fingers.
+export function classifyThrowHand(points, gesture = null, worldPoints = null) {
+  const unknown = () => ({ grip: false, open: false, openness: 0, bentFingers: 0, extendedFingers: 0 });
+  if (points?.length !== 21 || !points.every(finitePoint)) return unknown();
+  const spatial = worldPoints?.length === 21
+    && worldPoints.every(point => finitePoint(point) && Number.isFinite(point.z));
+  const shape = spatial ? worldPoints : points;
+  const delta = (a, b) => [a.x - b.x, a.y - b.y, spatial ? a.z - b.z : 0];
+  const length = vector => Math.hypot(...vector);
+  const dot = (a, b) => a.reduce((sum, value, index) => sum + value * b[index], 0);
+  const span = (a, b) => length(delta(a, b));
+  const across = delta(shape[5], shape[17]), acrossLength = length(across);
+  const palm = Math.max(acrossLength, span(shape[0], shape[9]) * .65,
+    (span(shape[0], shape[5]) + span(shape[0], shape[17])) * .325);
+  if (palm < 1e-6) return unknown();
+  let bentFingers = 0, extendedFingers = 0, openness = 0;
+  for (const base of [5, 9, 13, 17]) {
+    const segments = [delta(shape[base + 1], shape[base]), delta(shape[base + 2], shape[base + 1]),
+      delta(shape[base + 3], shape[base + 2])];
+    const lengths = segments.map(length);
+    // Missing/collapsed joints are not positive evidence for either command.
+    if (!lengths.every(value => value > palm * .03)) return unknown();
+    const reach = span(shape[base + 3], shape[base]) / lengths.reduce((sum, value) => sum + value, 0);
+    const bend = Math.min(dot(segments[0], segments[1]) / (lengths[0] * lengths[1]),
+      dot(segments[1], segments[2]) / (lengths[1] * lengths[2]));
+    // About a 30-degree joint curl already grabs, well before a closed fist.
+    // A separate stricter extension gate leaves a neutral transition band.
+    if ((bend < .86 && reach < .975) || reach < .94) bentFingers++;
+    if (reach > .965 && bend > .92) extendedFingers++;
+    openness += clamp(reach * (bend + 1) * .5, 0, 1) / 4;
+  }
+  // The thumb must clear the index side of the palm and not pinch its tip.
+  // The across-palm axis is roll/scale invariant, including in world space.
+  // Thumb joints may be unavailable in simple 21-point integrations; use the
+  // separated tip in that case, and validate its bend when both joints exist.
+  const thumbSide = acrossLength > palm * .15
+    ? dot(delta(shape[4], shape[5]), across) / acrossLength / palm : 0;
+  const thumbSegments = [delta(shape[3], shape[2]), delta(shape[4], shape[3])];
+  const thumbLengths = thumbSegments.map(length);
+  const usableThumb = thumbLengths.every(value => value > palm * .03);
+  const thumbStraight = !usableThumb || (dot(thumbSegments[0], thumbSegments[1]) / (thumbLengths[0] * thumbLengths[1]) > .4
+    && span(shape[4], shape[2]) / (thumbLengths[0] + thumbLengths[1]) > .85);
+  const thumbSeparated = thumbSide > .15 && span(shape[4], shape[8]) > palm * .55 && thumbStraight;
+  const open = extendedFingers === 4 && thumbSeparated;
+  return { grip: !open && bentFingers >= 2, open, openness, bentFingers, extendedFingers };
+}
+
+export function chooseControlHand(hands, previous, { width = 1280, swapped = false, solo = false, elapsed = 80, anchor = null, preferGrip = false, preferSoftGrip = false, gripOptions = null, fastMotion = false, recoverHeld = false } = {}) {
   const valid = hands.filter(hand => finitePoint(hand.palm) && finitePoint(hand.wrist));
   if (previous) {
     if (!finitePoint(previous.wrist) || !Number.isFinite(elapsed) || elapsed > (recoverHeld ? HELD_HAND_GRACE_MS : MAX_SAMPLE_GAP)) return null;
@@ -188,7 +239,8 @@ export function chooseControlHand(hands, previous, { width = 1280, swapped = fal
     return null;
   }
   const selected = valid.filter(h => solo || (swapped ? h.palm.x > width * .5 : h.palm.x < width * .5))
-    .sort((a, b) => (preferGrip ? Number(handGrip(b.points, false, b.gesture, b.worldPoints, gripOptions))
+    .sort((a, b) => (preferSoftGrip ? Number(classifyThrowHand(b.points, b.gesture, b.worldPoints).grip)
+      - Number(classifyThrowHand(a.points, a.gesture, a.worldPoints).grip) : preferGrip ? Number(handGrip(b.points, false, b.gesture, b.worldPoints, gripOptions))
       - Number(handGrip(a.points, false, a.gesture, a.worldPoints, gripOptions)) : 0)
       || (finitePoint(anchor) ? distance(a.palm, anchor) - distance(b.palm, anchor) : 0)
       || (swapped ? b.palm.x - a.palm.x : a.palm.x - b.palm.x))[0] || null;

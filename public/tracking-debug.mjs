@@ -14,22 +14,24 @@ const FIELDS = [
   ['gestureConfidence', 'パーの信頼度', .5, .95, .05, '%'],
   ['smoothingMs', '表示のふわり補正', 0, 160, 5, 'ms'],
 ];
-const PHASE_NAMES = { ready: '手を待っています', held: '手に乗せています', flying: '投球中', worn: '投球完了' };
+const PHASE_NAMES = { ready: '軽く握るのを待っています', held: '手に持っています', flying: '投球中', worn: '投球完了' };
 const GESTURE_NAMES = { Closed_Fist: 'グー', Open_Palm: 'パー', None: '判別中', Unknown: '判別中' };
 const QUALITY_NAMES = { auto: '自動', light: '軽量', high: '高画質' };
 const REASON_NAMES = {
-  ready: '投げる側に手を映すと、かぼちゃが手に乗ります。',
+  ready: '投げる側で手を軽く握ると、かぼちゃを持てます。',
   'waiting-hand': '手を探しています。手のひら全体をカメラへ。',
+  'waiting-grip': '手を少し丸めると、かぼちゃを持てます。強く握る必要はありません。',
   'wrong-side': '投げる人の側へ手を移してください。',
-  gripping: '手を認識して保持しています。パーで相手へ振ってください。',
-  swing: '相手へ手を振っています。パーを確認すると投げます。',
-  'open-confirm': 'パーを確認中です。確認時間を下げると早く離せます。',
+  gripping: 'ゆるく握った手を認識して保持しています。相手へ振り、指を開き切ってください。',
+  swing: '相手へ手を振っています。指をしっかり開くと投げます。',
+  opening: 'まだ指を開く途中です。開き切るまで、かぼちゃを持ち続けます。',
+  'open-confirm': '開き切ったパーを確認中です。確認時間を下げると早く離せます。',
   'missing-hand': '手を見失っています。画面内へ戻るまで保持します。',
   'edge-hold': '手が見切れています。誤って離さず、そのまま保持します。',
   'no-receiver': '相手の顔が見つかりません。かぶる人をカメラへ。',
   direction: '相手の方向へ、もう少し大きく手を動かしてください。',
   slow: '速度・距離・観測時間が条件未達です。下の値で判定を調整できます。',
-  cancelled: '保持を解除しました。投げる側にもう一度手を映してください。',
+  cancelled: '保持を解除しました。投げる側でもう一度手を軽く握ってください。',
   launched: '投球を認識しました。',
   landed: 'かぼちゃが相手に届きました。',
 };
@@ -78,7 +80,7 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
   const intro = element('p', 'tracking-debug__intro', 'F2 で表示切替。骨は補正前の検出位置です。橙＝操作する手、水色＝ほかの手。');
   const state = element('p', 'tracking-debug__state', 'カメラを開始すると認識状態が見られます。');
   const stages = element('ol', 'tracking-debug__stages');
-  const stageNodes = ['手を映す', '相手へ振る', 'パーで離す', '投球'].map(text => {
+  const stageNodes = ['軽く握る', '相手へ振る', 'しっかり開く', '投球'].map(text => {
     const node = element('li', '', text); stages.append(node); return node;
   });
   const reason = element('p', 'tracking-debug__reason');
@@ -90,7 +92,8 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
   const values = element('dl', 'tracking-debug__metrics');
   for (const [key, label] of [
     ['renderFps', '画面の FPS'], ['handFps', '手の検出 / 秒'], ['handLatencyMs', '手の遅れ'], ['renderMs', '描画の処理時間'],
-    ['handMs', '手の処理時間'], ['faceMs', '顔の処理時間'], ['gesture', '手の形'], ['confidence', '形の信頼度'],
+    ['handMs', '手の処理時間'], ['faceMs', '顔の処理時間'], ['gesture', 'モデルの手の形'], ['confidence', '形の信頼度'],
+    ['openness', '指の開き具合'],
     ['handCount', '検出した手'], ['receiverSeen', '相手の顔'], ['speed', '相手方向の速度'], ['travel', '移動距離'],
     ['duration', '動作の観測時間'], ['gap', '観測の間隔'],
     ['quality', '描画品質'],
@@ -148,13 +151,13 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
     const snapshot = latest, phase = snapshot.phase || 'ready';
     const gestureName = typeof snapshot.gesture === 'object' ? snapshot.gesture?.categoryName : snapshot.gesture;
     const stage = phase === 'flying' || phase === 'worn' ? 3 : phase === 'held'
-      ? snapshot.releaseProgress > 0 ? 2 : 1 : 0;
+      ? snapshot.releaseProgress > 0 || snapshot.reason === 'opening' || snapshot.reason === 'open-confirm' ? 2 : 1 : 0;
     state.textContent = snapshot.missing ? '手を見失っています · 保持して復帰を待機' : PHASE_NAMES[phase] || phase;
     stageNodes.forEach((node, index) => {
       node.className = index === stage ? 'is-current' : index < stage ? 'is-complete' : '';
       if (index === stage) node.setAttribute('aria-current', 'step'); else node.removeAttribute('aria-current');
     });
-    reason.textContent = reasonText(snapshot.reason) || (snapshot.missing ? '手を画面内に戻してください。' : '手を映す → パーで相手へ振る、の順に確認します。');
+    reason.textContent = reasonText(snapshot.reason) || (snapshot.missing ? '手を画面内に戻してください。' : '軽く握る → 相手へ振る → しっかり開く、の順に確認します。');
     lastFailure.hidden = !snapshot.lastThrowReason;
     lastFailure.textContent = snapshot.lastThrowReason ? `直近の失敗：${reasonText(snapshot.lastThrowReason)}` : '';
     release.value = Math.max(0, Math.min(1, Number(snapshot.releaseProgress) || 0));
@@ -163,6 +166,7 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
       handLatencyMs: finite(snapshot.handLatencyMs, 0, ' ms'), renderMs: finite(snapshot.renderMs, 1, ' ms'),
       handMs: finite(snapshot.handMs, 1, ' ms'), faceMs: finite(snapshot.faceMs, 1, ' ms'),
       gesture: GESTURE_NAMES[gestureName] || gestureName || '—', confidence: finite(Number.isFinite(snapshot.confidence) ? snapshot.confidence * 100 : NaN, 0, '%'),
+      openness: finite(Number.isFinite(snapshot.openness) ? snapshot.openness * 100 : NaN, 0, '%'),
       handCount: finite(snapshot.handCount, 0, ' 本'), receiverSeen: snapshot.receiverSeen ? '検出あり' : '検出なし',
       speed: `${finite(snapshot.speed)} / ${finite(snapshot.minSpeed ?? settings.minSpeed)} px/s`,
       travel: `${finite(snapshot.travel)} / ${finite(snapshot.minDistance ?? settings.minDistance)} px`,
