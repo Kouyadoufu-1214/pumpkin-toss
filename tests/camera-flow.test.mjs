@@ -315,6 +315,8 @@ test('a tracked face disappearing during flight or after landing does not become
     assert.equal(h.state().flight.target.manual, false);
     h.run(`phase = '${phase}'`);
     h.track({ faces: [] });
+    assert.equal(h.state().receiver.x, 1024, 'a short miss keeps the last observed face');
+    h.setNow(2401); h.run('expireTracking(2401)');
     assert.equal(h.state().receiver, null);
     assert.equal(h.run('currentTarget()'), null);
     assert.equal(h.state().flight.target.x, 1024, 'the flight keeps its last intended destination');
@@ -332,7 +334,9 @@ test('losing the receiver never transfers a flying or worn pumpkin to the other 
       const selected = h.state().receiver;
       h.run('launch(restPose(), currentTarget())'); h.run(`phase = '${phase}'`);
       h.track({ faces: [faceLandmarks(otherX)] });
-      assert.equal(h.state().receiver, null, 'the remaining participant is outside the tracking gate');
+      assert.equal(h.state().receiver, selected, 'retain the original face instead of the remaining participant');
+      h.setNow(2401); h.track({ faces: [faceLandmarks(otherX)] });
+      assert.equal(h.state().receiver, null, 'the remaining participant is outside the tracking gate after grace expires');
       assert.equal(h.state().mouseTrackedFace, selected, 'remember the lost destination for reacquisition');
       const returnedX = targetX + (swapped ? .03 : -.03);
       h.track({ faces: [faceLandmarks(otherX), faceLandmarks(returnedX)] });
@@ -349,12 +353,40 @@ test('tracking chooses the closest nearby face during a throw instead of a new r
   close(h.state().receiver.x, .69 * 1280);
 });
 
+test('repeated mouse-camera renders cannot renew a cached face after the real observation expires', () => {
+  const h = cameraHarness(); h.run("source = 'mouse-camera';");
+  h.track({ faces: [faceLandmarks(.75)] });
+  h.run('launch(restPose(), currentTarget()); phase = "worn";');
+  for (const time of [1300, 1900, 2400]) {
+    h.setNow(time); h.run(`expireTracking(${time}); mouseCameraRoles()`);
+    close(h.state().receiver.x, 960);
+    assert.equal(h.run('mouseFaceSeenAt'), 1000, 'renders use the original capture time');
+  }
+  h.setNow(2401); h.run('expireTracking(2401); mouseCameraRoles()');
+  assert.equal(h.state().receiver, null);
+  assert.equal(h.run('mouseFaceSeenAt'), 1000);
+});
+
+test('late face results older than grace cannot revive the destination in either camera mode', () => {
+  for (const mode of ['camera', 'mouse-camera']) {
+    const h = cameraHarness(); h.run(`source = '${mode}';`);
+    h.track({ faces: [faceLandmarks(.75)] });
+    h.run('launch(restPose(), currentTarget()); phase = "worn";');
+    h.setNow(2600); h.run('expireTracking(2600)');
+    assert.equal(h.state().receiver, null);
+    h.receive({ time: 1100, faceTime: 1100, facesUpdated: true, faces: [faceLandmarks(.75)], matrices: [] });
+    assert.equal(h.state().receiver, null, 'an old capture remains expired even when delivered now');
+    h.receive({ time: 2600, faceTime: 2600, facesUpdated: true, faces: [faceLandmarks(.74)], matrices: [] });
+    close(h.state().receiver.x, .74 * 1280, 'a fresh observation can reacquire');
+  }
+});
+
 test('resetting a round or stopping the camera clears its destination lock for the next visitor', () => {
   const h = cameraHarness(); h.run("source = 'mouse-camera';");
   h.track({ faces: [faceLandmarks(.75)] });
   h.run('launch(restPose(), currentTarget())');
   h.track({ faces: [faceLandmarks(.25)] });
-  assert.equal(h.state().receiver, null);
+  close(h.state().receiver.x, 960, 'keep the original destination briefly');
   h.run('resetRound()');
   assert.equal(h.state().mouseTrackedFace, null);
   h.track({ faces: [faceLandmarks(.25)] });
@@ -514,10 +546,12 @@ test('a brief face miss retains the receiver, but an expired face never becomes 
   assert.equal(h.state().receiver.x, 960);
   assert.equal(h.state().phase, 'held');
   h.setNow(1700); h.track({ hands: [handLandmarks(170, 400)] });
-  h.setNow(1900); h.track({ hands: [handLandmarks(350, 400)] });
-  assert.equal(h.state().receiver, null, 'cached faces expire after 850ms');
+  h.setNow(2300); h.track({ hands: [handLandmarks(180, 400)] });
+  assert.equal(h.state().receiver.x, 960, 'a face miss longer than the old 850ms grace is tolerated');
+  h.setNow(2450); h.track({ hands: [handLandmarks(350, 400)] });
+  assert.equal(h.state().receiver, null, 'cached faces expire after 1400ms');
   assert.equal(h.state().phase, 'held');
-  for (const time of [2000, 2100]) {
+  for (const time of [2500, 2600]) {
     h.setNow(time); h.track({ hands: [handLandmarks(450, 400, true)], gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
   }
   assert.equal(h.state().phase, 'held', 'a missing receiver keeps the pumpkin on the hand for retry');
@@ -643,6 +677,10 @@ test('a brief worker stall shares the hold grace period and eventually clears st
   h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(100, 400)] });
   h.run('expireTracking(2000)');
   assert.equal(h.state().phase, 'held');
+  assert.equal(h.state().receiver.x, 960, 'a worker stall does not cut face grace down to 900ms');
+  h.run('expireTracking(2400)');
+  assert.equal(h.state().receiver.x, 960);
+  h.run('expireTracking(2401)');
   assert.equal(h.state().receiver, null, 'face expiry remains independent of hand retention');
   assert.equal(h.effects.release, 0);
   h.run('expireTracking(2501)');
@@ -743,15 +781,15 @@ test('hands are applied before face work finishes without releasing the in-fligh
 test('skipping face inference preserves a recent target but cannot renew an old face indefinitely', () => {
   const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
   h.receive({ time: 1000, facesUpdated: true, faceTime: 1000, faces: [faceLandmarks(.75)], matrices: [] });
-  for (const time of [1200, 1600, 1800]) {
+  for (const time of [1200, 1600, 1800, 2200, 2400]) {
     h.setNow(time);
     h.receive({ type: 'hands', time, hands: [handLandmarks(180, 400)] });
     h.receive({ type: 'result', time, facesUpdated: false, faceTime: 1000, faces: [] });
     close(h.state().receiver.x, 960);
   }
-  h.setNow(1900);
-  h.receive({ type: 'hands', time: 1900, hands: [handLandmarks(180, 400)] });
-  h.receive({ type: 'result', time: 1900, facesUpdated: false, faceTime: 1000, faces: [] });
+  h.setNow(2401);
+  h.receive({ type: 'hands', time: 2401, hands: [handLandmarks(180, 400)] });
+  h.receive({ type: 'result', time: 2401, facesUpdated: false, faceTime: 1000, faces: [] });
   assert.equal(h.state().receiver, null);
   assert.equal(h.state().phase, 'held');
 });

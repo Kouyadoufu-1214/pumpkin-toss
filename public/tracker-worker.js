@@ -36,7 +36,7 @@ async function initialize({ detectHands = true, numHands = 4 }) {
     faceTask = await self.exports.FaceLandmarker.createFromOptions(files, {
       baseOptions: { modelAssetPath: asset('face_landmarker.task'), delegate: 'CPU' },
       runningMode: 'VIDEO', numFaces: 2,
-      minFaceDetectionConfidence: 0.4, minFacePresenceConfidence: 0.4, minTrackingConfidence: 0.4,
+      minFaceDetectionConfidence: 0.3, minFacePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
       outputFacialTransformationMatrixes: true,
     });
     faceEngine = 'face-landmarker';

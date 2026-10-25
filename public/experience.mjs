@@ -25,6 +25,8 @@ let caster = null, receiver = null, controlHand = null, gripped = false, pinched
 let lastResult = 0, faces = [], hands = [], smoothTarget = null, pointer = null, messageTimer, lastCue = '';
 let session = 0, stream = null, worker = null, workerReady = false, processing = false, lastFrame = 0, lastVideoTime = -1, loading = false, initTimer, requestReject;
 let manualTarget = null, mouseTrackedFace = null, handSeenAt = 0, trackingInfo = {}, lastTrackingText = '', frameFailures = 0;
+const FACE_GRACE_MS = 1400;
+let faceSampleTime = null, mouseFaceSeenAt = null;
 let renderTime = 0;
 let rememberedRoles = { caster: null, receiver: null }, pendingRelease = null;
 let handMissing = false, holdRecovery = false;
@@ -121,6 +123,7 @@ function updateThrowResult(time) {
 function resetRound() {
   hideThrowResult();
   phase = 'ready'; toss.cancel(); heldPose = flight = smoothTarget = mouseTrackedFace = null;
+  mouseFaceSeenAt = null;
   rememberedRoles = { caster: null, receiver: null }; pendingRelease = null;
   handMissing = holdRecovery = false;
   handMotion.reset(); softFollow.reset(); debugReason = 'waiting-hand'; lastThrowMetrics = null;
@@ -198,6 +201,8 @@ function startSample(mode) {
 
 function mouseCameraRoles() {
   caster = sampleRoles().caster;
+  const now = performance.now();
+  const visibleFaces = faceSampleTime !== null && now - faceSampleTime > FACE_GRACE_MS ? [] : faces;
   const trackingThrow = (phase === 'flying' || phase === 'worn') && flight && !manualTarget;
   const previous = trackingThrow && mouseTrackedFace;
   // Detector array order and left/right extremes are not person identities.
@@ -205,11 +210,13 @@ function mouseCameraRoles() {
   // the pumpkin to the other participant who is still visible.
   const reach = previous ? Math.max(120, Math.min(W * .3, previous.h * 1.2)) : 0;
   const detected = previous
-    ? faces.filter(face => distance(face, previous) <= reach).sort((a, b) => distance(a, previous) - distance(b, previous))[0]
-    : [...faces].sort((a, b) => swapped ? a.x - b.x : b.x - a.x)[0];
-  if (detected && !manualTarget) mouseTrackedFace = detected;
+    ? visibleFaces.filter(face => distance(face, previous) <= reach).sort((a, b) => distance(a, previous) - distance(b, previous))[0]
+    : [...visibleFaces].sort((a, b) => swapped ? a.x - b.x : b.x - a.x)[0];
+  if (detected && !manualTarget) { mouseTrackedFace = detected; mouseFaceSeenAt = faceSampleTime; }
+  // Rendering the same result again must never renew the observation age.
+  const retained = mouseTrackedFace && mouseFaceSeenAt !== null && now - mouseFaceSeenAt <= FACE_GRACE_MS ? mouseTrackedFace : null;
   const trackingLost = trackingThrow && (mouseTrackedFace || !flight.target.manual);
-  receiver = manualTarget || detected || (trackingLost ? null : { ...sampleRoles().receiver, sample: false, manual: true });
+  receiver = manualTarget || detected || retained || (trackingLost ? null : { ...sampleRoles().receiver, sample: false, manual: true });
 }
 function handCameraRoles(time, facesUpdated = true) {
   const detected = facesUpdated ? resolveRoles(faces, roleOptions()) : { caster: null, receiver: null };
@@ -222,7 +229,7 @@ function handCameraRoles(time, facesUpdated = true) {
     // roles. Prefer a current detection over a nearby stale one.
     if (!detected[role] && saved && other && distance(other, saved.face) < Math.max(120, saved.face.h * 1.2)) rememberedRoles[role] = null;
     if (detected[role]) rememberedRoles[role] = { face: detected[role], time };
-    else if (rememberedRoles[role] && time - rememberedRoles[role].time > 850) rememberedRoles[role] = null;
+    else if (rememberedRoles[role] && time - rememberedRoles[role].time > FACE_GRACE_MS) rememberedRoles[role] = null;
   }
   caster = rememberedRoles.caster?.face || null;
   receiver = solo ? sampleFace('right') : rememberedRoles.receiver?.face || null;
@@ -259,15 +266,19 @@ function handAtCameraEdge(hand, marginRatio = .04) {
     || point.y < rect.y + margin || point.y > rect.y + rect.h - margin);
 }
 function expireTracking(time) {
+  // Face grace is measured from the real capture, independently of hand work
+  // or the worker's 900ms stall timeout. Empty/skipped results cannot renew it.
+  if (faceSampleTime !== null && time - faceSampleTime > FACE_GRACE_MS) faces = [];
+  if (source === 'camera') handCameraRoles(time, false);
+  else if (source === 'mouse-camera') mouseCameraRoles();
   // Empty results can arrive repeatedly; they must not extend the last real
   // hand's grace period if the worker subsequently stalls.
   if (source === 'camera' && !carving && phase === 'held' && handSeenAt && time - handSeenAt > HELD_HAND_GRACE_MS) {
     cancelHold('手を画面に戻すと、もう一度持てます'); debugReason = lastThrowReason = 'missing-hand'; updateTrackingStatus();
   }
   if (!lastResult || time - lastResult <= 900) return;
-  faces = []; hands = [];
+  hands = [];
   if (source === 'camera') {
-    caster = null; receiver = solo ? sampleFace('right') : null; rememberedRoles = { caster: null, receiver: null };
     if (!carving && phase === 'held' && time - handSeenAt <= HELD_HAND_GRACE_MS) {
       handMissing = holdRecovery = true; debugReason = 'missing-hand';
     } else { lastResult = 0; cancelHold(); }
@@ -279,6 +290,7 @@ function stopCamera(keepStream = false) {
   worker?.terminate(); worker = null; workerReady = processing = loading = false;
   if (!keepStream) { stream?.getTracks().forEach(track => track.stop()); stream = null; video.srcObject = null; }
   faces = []; hands = []; lastResult = 0; caster = receiver = null; cancelHold();
+  faceSampleTime = mouseFaceSeenAt = null;
   handSeenAt = 0; trackingInfo = {}; manualTarget = mouseTrackedFace = null; lastTrackingText = ''; frameFailures = 0;
   $('loading').hidden = true; $('stop-camera').hidden = true;
   $('loading').classList.remove('camera-live');
@@ -331,7 +343,7 @@ async function startCamera(practice = false, input = 'hand', reuse = true) {
     $('loading-detail').textContent = input === 'mouse' ? '映像を見ながら、先にマウスで投げられます。' : '映像は表示中です。「映像＋マウスで投げる」にも切り替えられます。';
     if (input === 'mouse') { mouseCameraRoles(); updateTrackingStatus(); }
     initTimer = setTimeout(() => { if (id === session) trackingFallback('認識の準備に時間がかかっています。映像を残してマウス操作に切り替えました。'); }, 45000);
-    worker = new Worker('./tracker-worker.js?v=20261025-dev-tools');
+    worker = new Worker('./tracker-worker.js?v=20261025-face-easy');
     await new Promise((resolve, reject) => {
       requestReject = reject;
       worker.onerror = () => {
@@ -407,10 +419,14 @@ function acceptTracking(data) {
     if (elapsed > 0) trackingInfo.handFps = Math.round(1000 / elapsed);
   }
   if (facesUpdated && Number.isFinite(data.faceMs)) trackingInfo.lastFaceMs = data.faceMs;
-  if (facesUpdated) faces = data.faces.map((points, index) => measureFace(points, screenPoint, faceQuaternion(data.matrices?.[index], $('mirror').checked))).filter(Boolean);
-  else if (Number.isFinite(data.faceTime) && time - data.faceTime > 850) faces = [];
+  if (facesUpdated) {
+    faceSampleTime = Number.isFinite(data.faceTime) ? data.faceTime : time;
+    faces = now - faceSampleTime <= FACE_GRACE_MS
+      ? data.faces.map((points, index) => measureFace(points, screenPoint, faceQuaternion(data.matrices?.[index], $('mirror').checked))).filter(Boolean) : [];
+  } else if (faceSampleTime !== null && now - faceSampleTime > FACE_GRACE_MS) faces = [];
   if (source === 'mouse-camera') { mouseCameraRoles(); updateTrackingStatus(elapsed); return; }
-  handCameraRoles(facesUpdated ? data.faceTime ?? time : time, facesUpdated);
+  handCameraRoles(facesUpdated ? faceSampleTime : now, facesUpdated);
+  if (facesUpdated) handCameraRoles(now, false);
   // The worker sends hand observations before face work. A frame-complete
   // message must not replay a grip/release or clear a hand that is still held.
   if (!hasHands) { updateTrackingStatus(); return; }
@@ -801,7 +817,7 @@ $('play-solo').onclick = () => { if (carving) finishCarving(); startCamera(true)
 $('guide').onclick = () => { if (carving) finishCarving(); startSample('guide'); };
 $('mouse').onclick = () => { if (carving) finishCarving(); startCamera(false, 'mouse'); };
 $('mouse-sample').onclick = () => { if (carving) finishCarving(); startSample('mouse'); };
-$('target-auto').onclick = () => { manualTarget = mouseTrackedFace = null; mouseCameraRoles(); updateCameraLabels(); updateTrackingStatus(); };
+$('target-auto').onclick = () => { manualTarget = mouseTrackedFace = null; mouseFaceSeenAt = null; mouseCameraRoles(); updateCameraLabels(); updateTrackingStatus(); };
 $('face-fit-scale').oninput = () => { $('face-fit-value').textContent = `${$('face-fit-scale').value}%`; };
 $('face-fit-reset').onclick = () => { $('face-fit-scale').value = '100'; $('face-fit-value').textContent = '100%'; };
 $('stop-camera').onclick = $('cancel-camera').onclick = () => { if (carving) finishCarving(); startSample('mouse'); };

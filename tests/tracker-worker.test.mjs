@@ -184,13 +184,23 @@ test('shared runtime failure reports unavailable engines without blocking manual
   }
 });
 
-test('both hand engines use the more permissive confidence gates and preserve multiple-hand capacity', async () => {
+test('face detection uses forgiving confidence gates in camera and mouse modes', async () => {
+  for (const detectHands of [true, false]) {
+    const h = harness(); await h.init({ detectHands });
+    const faceOptions = h.created.find(item => item.kind === 'face').options;
+    assert.equal(faceOptions.minFaceDetectionConfidence, .3);
+    assert.equal(faceOptions.minFacePresenceConfidence, .3);
+    assert.equal(faceOptions.minTrackingConfidence, .3);
+    assert.equal(faceOptions.numFaces, 2);
+    assert.equal(faceOptions.runningMode, 'VIDEO');
+    assert.equal(faceOptions.outputFacialTransformationMatrixes, true);
+    assert.deepEqual(h.created.map(item => item.kind), detectHands ? ['face', 'gesture'] : ['face']);
+  }
+});
+
+test('both hand engines retain their confidence gates and multiple-hand capacity', async () => {
   for (const failInit of [[], ['gesture']]) {
     const h = harness({ failInit }); await h.init();
-    const faceOptions = h.created.find(item => item.kind === 'face').options;
-    assert.equal(faceOptions.minFaceDetectionConfidence, .4);
-    assert.equal(faceOptions.minFacePresenceConfidence, .4);
-    assert.equal(faceOptions.minTrackingConfidence, .4);
     for (const { kind, options } of h.created.filter(item => item.kind !== 'face')) {
       assert.equal(options.numHands, 4);
       assert.equal(options.minHandDetectionConfidence, .4);
