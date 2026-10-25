@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose } from '../public/exhibit-logic.mjs';
+import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose, HELD_HAND_GRACE_MS } from '../public/exhibit-logic.mjs';
 
 test('two-player mode never makes a lone person their own receiver', () => {
   const left = { x: 200 }, right = { x: 1050 };
@@ -38,6 +38,61 @@ test('sparse tracking follows a fast held hand while still rejecting distant, mi
   assert.equal(chooseControlHand([hand(700, 'Right')], previous, { elapsed: 300 }), null);
   assert.equal(chooseControlHand([hand(460)], previous, { elapsed: 651 }), null);
   assert.equal(chooseControlHand([], previous, { elapsed: 300 }), null, 'a missing hand must never be invented');
+});
+
+test('held recovery can reacquire a nearby wrist after a short absence without changing the default timeout', () => {
+  assert.equal(HELD_HAND_GRACE_MS, 1500);
+  for (const swapped of [false, true]) {
+    const hand = (x, label = 'Left') => ({ palm: { x: swapped ? 1280 - x : x, y: 450 },
+      wrist: { x: swapped ? 1280 - x : x, y: 480 }, label });
+    const held = chooseControlHand([hand(350)], null, { swapped }), returned = hand(450);
+    assert.equal(chooseControlHand([returned], held, { elapsed: 1000, swapped }), null);
+    for (const elapsed of [651, 1000, HELD_HAND_GRACE_MS]) {
+      assert.equal(chooseControlHand([returned], held, { elapsed, swapped, recoverHeld: true }), returned);
+    }
+    assert.equal(chooseControlHand([returned], held, { elapsed: HELD_HAND_GRACE_MS + 1, recoverHeld: true }), null);
+    assert.equal(chooseControlHand([hand(450, 'Right')], held, { elapsed: 1000, recoverHeld: true }), null);
+    assert.equal(chooseControlHand([], held, { elapsed: 1000, recoverHeld: true }), null);
+    assert.equal(chooseControlHand([hand(550)], held, { elapsed: 1000, recoverHeld: true, fastMotion: true }), null,
+      'even an enabled fast swing cannot extend the recovery distance');
+  }
+});
+
+test('held recovery rejects ambiguous unknown nearby hands and keeps a smaller stage bound', () => {
+  const hand = x => ({ palm: { x, y: 450 }, wrist: { x, y: 480 }, label: 'Left' });
+  const held = chooseControlHand([hand(350)], null), options = { elapsed: 1000, recoverHeld: true };
+  assert.equal(chooseControlHand([hand(360), hand(420)], held, options), null);
+  assert.equal(chooseControlHand([hand(510)], held, { ...options, width: 800 }), null);
+  assert.equal(chooseControlHand([hand(490)], held, { ...options, width: 800 }).wrist.x, 490);
+});
+
+test('held recovery keeps a known peer reserved through missed results and reacquires only the original hand', () => {
+  for (const swapped of [false, true]) {
+    const hand = x => ({ palm: { x: swapped ? 1280 - x : x, y: 450 },
+      wrist: { x: swapped ? 1280 - x : x, y: 480 }, label: 'Left' });
+    const initial = chooseControlHand([hand(440), hand(950)], null, { swapped });
+    const held = chooseControlHand([hand(700), hand(950)], initial, { elapsed: 300, swapped });
+    const options = { swapped, fastMotion: true, recoverHeld: true };
+    assert.equal(chooseControlHand([hand(850)], held, { ...options, elapsed: 350 }), null);
+    assert.equal(chooseControlHand([hand(790)], held, { ...options, elapsed: 800 }), null);
+    assert.equal(chooseControlHand([hand(740)], held, { ...options, elapsed: 1100 }), null,
+      'a known peer stays reserved even nearer the old held wrist than its own last position');
+    const returned = hand(650), peer = hand(740);
+    assert.equal(chooseControlHand([peer, returned], held, { ...options, elapsed: 1400 }), returned);
+    assert.equal(chooseControlHand([hand(730)], returned, { ...options, elapsed: 80 }), null);
+  }
+});
+
+test('a reacquired hand does not carry forward velocity from before or across the tracking gap', () => {
+  const hand = x => ({ palm: { x, y: 450 }, wrist: { x, y: 480 }, label: 'Left' });
+  for (const delta of [0, 190]) {
+    const initial = chooseControlHand([hand(300)], null);
+    const moving = chooseControlHand([hand(350)], initial, { elapsed: 40, fastMotion: true });
+    const returned = delta ? hand(350 + delta) : moving;
+    assert.equal(chooseControlHand([returned], moving, { elapsed: 700, recoverHeld: true, fastMotion: true }), returned);
+    assert.equal(chooseControlHand([hand(returned.wrist.x + 400)], returned, { elapsed: 80, fastMotion: true }), null,
+      'a blind gap cannot supply forward movement evidence for a distant hand');
+  }
 });
 
 test('fast-motion tracking accepts large forward swings while ordinary selection stays bounded', () => {

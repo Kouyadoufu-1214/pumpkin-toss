@@ -10,6 +10,7 @@ export function resolveRoles(faces, { width = 1280, swapped = false, solo = fals
 
 const finitePoint = point => point && Number.isFinite(point.x) && Number.isFinite(point.y);
 const MAX_SAMPLE_GAP = 650;
+export const HELD_HAND_GRACE_MS = 1500;
 const RELEASE_GRACE = 320;
 const otherHandSnapshots = new WeakMap();
 const handMotion = new WeakMap();
@@ -74,10 +75,11 @@ export function handGrip(points, previous = false, gesture = null, worldPoints =
     || (previous && possibleFist && gesture.score >= .55 && folded >= 1 && extended < 2);
 }
 
-export function chooseControlHand(hands, previous, { width = 1280, swapped = false, solo = false, elapsed = 80, anchor = null, preferGrip = false, fastMotion = false } = {}) {
+export function chooseControlHand(hands, previous, { width = 1280, swapped = false, solo = false, elapsed = 80, anchor = null, preferGrip = false, fastMotion = false, recoverHeld = false } = {}) {
   const valid = hands.filter(hand => finitePoint(hand.palm) && finitePoint(hand.wrist));
   if (previous) {
-    if (!finitePoint(previous.wrist) || !Number.isFinite(elapsed) || elapsed > MAX_SAMPLE_GAP) return null;
+    if (!finitePoint(previous.wrist) || !Number.isFinite(elapsed) || elapsed > (recoverHeld ? HELD_HAND_GRACE_MS : MAX_SAMPLE_GAP)) return null;
+    const recovering = elapsed > MAX_SAMPLE_GAP;
     // A fast swing covers more pixels between sparse recognition results.
     // Keep the expansion bounded so a distant receiver's hand is not adopted.
     const reach = clamp(Math.max(0, elapsed) * 1.3, 190, 360);
@@ -92,18 +94,31 @@ export function chooseControlHand(hands, previous, { width = 1280, swapped = fal
         if (hand.label && track.label && hand.label !== track.label) continue;
         const moved = distance(hand.wrist, track.wrist);
         if (trackIndex === 0 && fastMotion && moved > 340 && !forwardMotion) continue;
-        if (moved < reach) edges.push({ trackIndex, handIndex, moved });
+        if (moved < (recovering && trackIndex === 0 ? Math.min(200, width * .18) : reach)) edges.push({ trackIndex, handIndex, moved });
       }
     }
-    edges.sort((a, b) => a.moved - b.moved || b.trackIndex - a.trackIndex);
+    // After a longer absence, reserve known peers first. Reacquiring the old
+    // wrist must not turn another participant into the person holding it.
+    edges.sort((a, b) => (recovering ? Number(a.trackIndex === 0) - Number(b.trackIndex === 0) : 0)
+      || a.moved - b.moved || b.trackIndex - a.trackIndex);
     const matched = new Map(), used = new Set();
     for (const edge of edges) {
       if (matched.has(edge.trackIndex) || used.has(edge.handIndex)) continue;
       matched.set(edge.trackIndex, valid[edge.handIndex]); used.add(edge.handIndex);
     }
     const selected = matched.get(0);
-    if (selected) return rememberControlHand(selected, valid, previous, elapsed);
-    if (fastMotion) {
+    if (selected) {
+      if (!recovering) return rememberControlHand(selected, valid, previous, elapsed);
+      const candidates = valid.filter((hand, index) => (hand === selected || !used.has(index))
+        && !(hand.label && previous.label && hand.label !== previous.label)
+        && distance(hand.wrist, previous.wrist) < Math.min(200, width * .18));
+      if (candidates.length === 1) {
+        // No velocity can be inferred across the invisible part of a swing.
+        handMotion.delete(selected);
+        return rememberControlHand(selected, valid);
+      }
+    }
+    if (fastMotion && !recovering) {
       // A throw can cross several hundred pixels between camera results.
       // Reserve the normal matches above first, especially known peers, then
       // allow a bounded forward swing from the hand already holding a pumpkin.

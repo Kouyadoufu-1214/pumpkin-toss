@@ -73,5 +73,5 @@
 
   // This classic script is independent of the app's module graph, so an import
   // or initialization failure can still be shown in the static HTML panel.
-  import('./experience.mjs?v=20261025-fast-throw').catch(function (error) { fail(error, false); });
+  import('./experience.mjs?v=20261025-edge-hold').catch(function (error) { fail(error, false); });
 }());

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { clamp, distance, isPinched } from '../public/interaction.mjs';
-import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction } from '../public/exhibit-logic.mjs';
+import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, HELD_HAND_GRACE_MS } from '../public/exhibit-logic.mjs';
 import { FACE_OVAL, measureFace, fallbackFacePose, manualFaceTarget } from '../public/face-fit.mjs';
 import { HandMotion } from '../public/hand-motion.mjs';
 
@@ -80,7 +80,7 @@ function cameraHarness({ getUserMedia, play } = {}) {
   const context = vm.createContext({
     W: 1280, H: 720, $: element, canvas, video, window, document,
     art: { cancel() {}, base: null }, toss, dwell: new DwellAction(), pumpkin: undefined,
-    clamp, distance, isPinched, resolveRoles, chooseControlHand, handGrip, HandMotion,
+    clamp, distance, isPinched, resolveRoles, chooseControlHand, handGrip, HandMotion, HELD_HAND_GRACE_MS,
     measureFace, fallbackFacePose, manualFaceTarget,
     faceQuaternion: () => null,
     performance: { now: () => now }, getComputedStyle: () => ({ objectFit: 'contain' }),
@@ -458,7 +458,7 @@ test('a brief face miss retains the receiver, but an expired face never becomes 
   assert.match(h.element('message').textContent, /相手の顔/);
 });
 
-test('brief hand loss retains the held pose without releasing and longer loss cancels safely', () => {
+test('hand loss retains the held pose for 1.5 seconds without releasing, then cancels safely', () => {
   const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
   h.track({ hands: [handLandmarks(150, 400)] });
   const held = h.state().heldPose;
@@ -466,12 +466,130 @@ test('brief hand loss retains the held pose without releasing and longer loss ca
   assert.equal(h.state().phase, 'held');
   assert.equal(h.state().heldPose, held);
   assert.equal(h.effects.release, 0);
-  h.setNow(1600); h.track({});
+  h.setNow(2200); h.track({});
+  assert.equal(h.state().phase, 'held');
+  assert.match(h.element('live-status').textContent, /つかんだまま待っています/);
+  h.setNow(2501); h.track({});
   assert.equal(h.state().phase, 'ready');
   assert.equal(h.state().heldPose, null);
   assert.equal(h.effects.release, 0);
-  h.setNow(1700); h.track({ hands: [handLandmarks(150, 400)] });
+  h.setNow(2600); h.track({ hands: [handLandmarks(150, 400)] });
   assert.equal(h.state().phase, 'held', 'another fist starts a fresh hold after loss');
+});
+
+test('a hand returning near the camera edge after a one-second gap can continue and throw on either side', () => {
+  for (const swapped of [false, true]) {
+    const h = cameraHarness(); h.run(`source = 'camera'; swapped = ${swapped}; resetRound();`);
+    const x = swapped ? 1250 : 30, direction = swapped ? -1 : 1;
+    const frame = (time, offset, open = false) => {
+      h.setNow(time); h.track({ faces: [faceLandmarks(swapped ? .25 : .75)],
+        hands: offset === null ? [] : [handLandmarks(x + direction * offset, 400, open)],
+        gestures: [[{ categoryName: open ? 'Open_Palm' : 'Closed_Fist', score: .95 }]] });
+    };
+    frame(1000, 0); frame(1700, null); frame(2100, 50);
+    assert.equal(h.state().phase, 'held');
+    assert.equal(h.run('toss.history.length'), 1, 'unseen travel cannot supply a throw impulse');
+    frame(2250, 180); frame(2400, 290, true); frame(2470, 300, true);
+    assert.equal(h.state().phase, 'flying');
+    assert.equal(h.effects.release, 1);
+  }
+});
+
+test('an open hand returning after a long gap keeps its pumpkin but cannot throw from unseen motion', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(100, 400)] });
+  h.setNow(1800); h.track({ faces: [faceLandmarks(.75)] });
+  for (const time of [2100, 2200, 2300]) {
+    h.setNow(time); h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(220, 400, true)],
+      gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
+    assert.equal(h.state().phase, 'held');
+    assert.equal(h.state().flight, null);
+  }
+});
+
+test('uncertain cropped fingers do not release a held pumpkin at any real camera boundary', () => {
+  for (const [width, height, points] of [
+    [1280, 720, [[20, 400], [1260, 400], [250, 45], [250, 710]]],
+    [640, 480, [[180, 400], [1100, 400], [250, 45], [250, 710]]],
+    [1920, 800, [[20, 400], [1260, 400], [250, 110], [250, 610]]],
+  ]) {
+    for (const [x, y] of points) {
+      const h = cameraHarness(); h.run("source = 'camera'; solo = true; resetRound();");
+      h.video.videoWidth = width; h.video.videoHeight = height;
+      const rect = h.run('cameraRect()');
+      const hand = open => handLandmarks(x, y, open).map(point => ({
+        x: (point.x * 1280 - rect.x) / rect.w, y: (point.y * 720 - rect.y) / rect.h,
+      }));
+      h.track({ hands: [hand(false)] });
+      for (const time of [1100, 1200, 1300]) {
+        h.setNow(time); h.track({ hands: [hand(true)], gestures: [[{ categoryName: 'None', score: .9 }]] });
+        assert.equal(h.state().phase, 'held', `${width}x${height}: edge ${x}, ${y}`);
+        assert.equal(h.effects.release, 0);
+      }
+      const drawn = h.run('displayHeldPose()');
+      assert.ok(drawn.x > rect.x && drawn.x < rect.x + rect.w);
+      assert.ok(drawn.y > rect.y && drawn.y < rect.y + rect.h);
+      close(h.state().heldPose.x, x, 'clamping never changes the actual hand position');
+    }
+  }
+});
+
+test('an observed open hand can finish a throw across a short missed frame at the upper edge', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  const frame = (time, x, open = false) => {
+    h.setNow(time); h.track({ faces: [faceLandmarks(.75)], hands: x === null ? [] : [handLandmarks(x, 85, open)],
+      gestures: [[{ categoryName: open ? 'Open_Palm' : 'Closed_Fist', score: .95 }]] });
+  };
+  frame(1000, 150); frame(1150, 270); frame(1300, 370, true);
+  frame(1370, null);
+  assert.equal(h.state().phase, 'held');
+  assert.equal(h.effects.release, 0, 'a missing frame cannot confirm the release');
+  frame(1450, 380, true);
+  assert.equal(h.state().phase, 'flying');
+  assert.equal(h.effects.release, 1);
+});
+
+test('landmark-only fallback can throw with fully visible open fingers near the border', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  for (const [time, x, open] of [[1000, 150, false], [1150, 270, false], [1300, 370, true], [1400, 380, true]]) {
+    h.setNow(time); h.track({ handEngine: 'hand-landmarker', faces: [faceLandmarks(.75)],
+      hands: [handLandmarks(x, 100, open)] });
+  }
+  assert.equal(h.state().phase, 'flying', 'finger geometry can confirm release when the classifier is unavailable');
+});
+
+test('an uncertain edge hold cannot turn recovery into an observed re-grip', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(30, 400)] });
+  h.setNow(1800); h.track({ faces: [faceLandmarks(.75)] });
+  for (const [time, x] of [[2100, 40], [2700, 110], [2800, 110], [2900, 110]]) {
+    h.setNow(time); h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(x, 400, true)],
+      gestures: [[{ categoryName: 'None', score: .9 }]] });
+    assert.equal(h.state().phase, 'held');
+  }
+  assert.equal(h.state().flight, null);
+});
+
+test('a brief worker stall shares the hold grace period and eventually clears stale tracking', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(100, 400)] });
+  h.run('expireTracking(2000)');
+  assert.equal(h.state().phase, 'held');
+  assert.equal(h.state().receiver, null, 'face expiry remains independent of hand retention');
+  assert.equal(h.effects.release, 0);
+  h.run('expireTracking(2501)');
+  assert.equal(h.state().phase, 'ready');
+  assert.equal(h.state().heldPose, null);
+});
+
+test('empty results before a worker stall cannot renew the held hand grace period', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  h.track({ hands: [handLandmarks(100, 400)] });
+  h.setNow(2200); h.track({});
+  assert.equal(h.state().phase, 'held');
+  h.run('expireTracking(2501)');
+  assert.equal(h.state().phase, 'ready');
+  assert.equal(h.effects.release, 0);
 });
 
 test('a face crossing the middle cannot remain cached as its own receiver', () => {
