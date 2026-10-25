@@ -204,6 +204,22 @@ test('camera, hand, face and rendered frame rates are shown separately with unav
   assert.equal(metric('顔の検出 / 秒').textContent, '—');
 });
 
+test('full finger extension does not hide a thumb that has not opened', () => {
+  const h = harness(); h.api.toggle(true);
+  const metric = label => h.find(node => node.tagName === 'DT' && node.textContent === label).parentElement.children[1];
+  h.api.update({ phase: 'held', reason: 'thumb-closed', openness: 1, extendedFingers: 4, thumbOpen: false }, 200);
+  assert.equal(metric('指の開き具合').textContent, '100%');
+  assert.equal(metric('伸びた指（親指以外）').textContent, '4 / 4 本');
+  assert.equal(metric('親指の開き').textContent, 'まだ開いていない');
+  assert.match(h.find(node => node.className === 'tracking-debug__reason').textContent, /親指も/);
+  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, 'しっかり開く');
+  h.api.update({ thumbOpen: true, extendedFingers: 4 }, 400);
+  assert.equal(metric('親指の開き').textContent, '開いている');
+  h.api.update({ missing: true }, 600);
+  assert.equal(metric('親指の開き').textContent, '—');
+  assert.equal(metric('伸びた指（親指以外）').textContent, '—');
+});
+
 test('bone overlay uses raw mapped points only while enabled, preserves the canvas, and never draws a cached missing hand', () => {
   const h = harness(), calls = [], context = {};
   for (const name of ['save', 'restore', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'arc', 'fill', 'fillRect', 'fillText']) {

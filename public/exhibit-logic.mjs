@@ -117,7 +117,7 @@ export function handOpen(points, gesture = null, worldPoints = null, options = {
 // openness is a 0..1 mean extension measure for diagnostics, not a release
 // threshold; bentFingers / extendedFingers count the four non-thumb fingers.
 export function classifyThrowHand(points, gesture = null, worldPoints = null) {
-  const unknown = () => ({ grip: false, open: false, openness: 0, bentFingers: 0, extendedFingers: 0 });
+  const unknown = () => ({ grip: false, open: false, openness: 0, bentFingers: 0, extendedFingers: 0, thumbOpen: false });
   if (points?.length !== 21 || !points.every(finitePoint)) return unknown();
   const spatial = worldPoints?.length === 21
     && worldPoints.every(point => finitePoint(point) && Number.isFinite(point.z));
@@ -159,7 +159,7 @@ export function classifyThrowHand(points, gesture = null, worldPoints = null) {
     && span(shape[4], shape[2]) / (thumbLengths[0] + thumbLengths[1]) > .85);
   const thumbSeparated = thumbSide > .15 && span(shape[4], shape[8]) > palm * .55 && thumbStraight;
   const open = extendedFingers === 4 && thumbSeparated;
-  return { grip: !open && bentFingers >= 2, open, openness, bentFingers, extendedFingers };
+  return { grip: !open && bentFingers >= 2, open, openness, bentFingers, extendedFingers, thumbOpen: thumbSeparated };
 }
 
 export function chooseControlHand(hands, previous, { width = 1280, swapped = false, solo = false, elapsed = 80, anchor = null, preferGrip = false, preferSoftGrip = false, gripOptions = null, fastMotion = false, recoverHeld = false } = {}) {
@@ -301,14 +301,36 @@ export class TossGesture {
     if (!this.active) return outcome('cancelled');
     if (!target || !Number.isFinite(target.x)) { this.cancel(); return outcome('no-receiver'); }
     if (time - this.history.at(-1).time > MAX_SAMPLE_GAP) { this.cancel(); return outcome('slow'); }
-    const priorSamples = this.history.slice();
+    let priorSamples = this.history.slice();
     if (!this.move(point, time)) return outcome('cancelled');
-    const history = this.history, start = this.start;
-    const toward = (point.x - start.x) * direction;
+    let history = this.history, start = this.start;
     this.cancel();
-    if (toward < 24) return outcome('direction');
-    const recent = history.filter(p => time - p.time <= RELEASE_GRACE);
-    if (recent.some(p => (p.x - point.x) * direction > 32)) return outcome('direction');
+    // A real throw often starts by pulling the hand back. Find the latest
+    // observed turn after a substantial backswing, rather than requiring the
+    // release to pass the position where the pumpkin was first acquired.
+    // Small landmark jitters cannot reset the origin; a new forward run must
+    // advance at least 24 px after a backwards excursion greater than 32 px.
+    let peak = history[0], valley = null, pivotIndex = -1;
+    for (let index = 1; index < history.length; index++) {
+      const sample = history[index];
+      if (valley) {
+        if ((sample.x - valley.sample.x) * direction <= 0) valley = { sample, index };
+        else if ((sample.x - valley.sample.x) * direction >= 24) {
+          pivotIndex = valley.index; valley = null; peak = sample;
+        }
+      } else if ((sample.x - peak.x) * direction >= 0) peak = sample;
+      else if ((peak.x - sample.x) * direction > 32) valley = { sample, index };
+    }
+    if (pivotIndex >= 0) {
+      start = history[pivotIndex];
+      history = history.slice(pivotIndex);
+      priorSamples = priorSamples.filter(sample => sample.time >= start.time);
+      metrics.travel = finite((point.x - start.x) * direction);
+      metrics.distance = finite(distance(start, point));
+      metrics.duration = finite(time - start.time);
+    }
+    const toward = (point.x - start.x) * direction;
+    if (toward < 24 || valley && time - peak.time <= RELEASE_GRACE) return outcome('direction');
     // The opening observation cannot be the only evidence of a swing: a new
     // distant hand can otherwise look like a fast jump from a stationary hold.
     // Require forward motion already recorded before this release position.
@@ -330,10 +352,16 @@ export class TossGesture {
     // Opening the hand can be recognized one frame after the swing stops.
     // Look for recent forward motion, without counting a stationary release
     // as movement or averaging a fast flick away with the preceding hold.
-    let speed = 0, fast = false;
+    let speed = 0, fast = false, motionAnchor = history[0];
     for (let j = 1; j < history.length; j++) {
       const last = history[j];
-      if (time - last.time > RELEASE_GRACE || (last.x - history[j - 1].x) * direction < 2) continue;
+      // Accumulate small camera steps instead of requiring 2 px in every
+      // frame. Keep the last real movement endpoint so sub-pixel jitter while
+      // stopped cannot renew an old swing's age or its earlier high speed.
+      const movement = (last.x - motionAnchor.x) * direction;
+      if (Math.abs(movement) < 2) continue;
+      motionAnchor = last;
+      if (time - last.time > RELEASE_GRACE || movement <= 0) continue;
       for (let i = j - 1; i >= 0; i--) {
         const first = history[i], duration = last.time - first.time;
         // Sparse consecutive observations are useful up to the tracking gap

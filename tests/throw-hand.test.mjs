@@ -66,12 +66,15 @@ test('release needs four fully extended fingers and a separated thumb with sensi
     assert.equal(result.grip, false);
     assert.equal(result.open, true);
     assert.equal(result.extendedFingers, 4);
+    assert.equal(result.thumbOpen, true);
     assert.equal(result.bentFingers, 0);
     if (!angle) assert.equal(result.openness, 1);
   }
   for (const thumb of ['tucked', 'pinched', 'bent']) {
     const world = pose({ thumb }), result = classifyThrowHand(project(world), null, world);
     assert.equal(result.open, false, `${thumb} thumb is not fully open`);
+    assert.equal(result.thumbOpen, false, 'diagnostics identify why straight fingers alone do not release');
+    assert.equal(result.openness, 1);
     assert.equal(result.grip, false, 'a thumb gesture alone does not manufacture a loose grip');
   }
   const tipOnly = pose({ thumb: 'tip-only' });
@@ -122,7 +125,7 @@ test('valid world geometry keeps tilted and edge-on curls distinct from an open 
 });
 
 test('invalid or collapsed observations cannot grab or release, and invalid optional world data falls back to image geometry', () => {
-  const world = pose(), points = project(world), expectedUnknown = { grip: false, open: false, openness: 0, bentFingers: 0, extendedFingers: 0 };
+  const world = pose(), points = project(world), expectedUnknown = { grip: false, open: false, openness: 0, bentFingers: 0, extendedFingers: 0, thumbOpen: false };
   const invalid = points.map(point => ({ ...point })); invalid[8].x = NaN;
   const collapsed = points.map(point => ({ ...point })); collapsed[12] = { ...collapsed[11] };
   for (const input of [null, [], Array(21).fill({ x: 0, y: 0 }), invalid, collapsed]) {

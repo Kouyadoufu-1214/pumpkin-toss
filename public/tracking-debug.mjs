@@ -25,6 +25,7 @@ const REASON_NAMES = {
   gripping: 'ゆるく握った手を認識して保持しています。相手へ振り、指を開き切ってください。',
   swing: '相手へ手を振っています。指をしっかり開くと投げます。',
   opening: 'まだ指を開く途中です。開き切るまで、かぼちゃを持ち続けます。',
+  'thumb-closed': '4本の指は開いています。親指も手のひらから離して広げてください。',
   'open-confirm': '開き切ったパーを確認中です。確認時間を下げると早く離せます。',
   'missing-hand': '手を見失っています。画面内へ戻るまで保持します。',
   'release-recovered-open': 'パーと投げる動きは確認済み。直後の認識抜けを補って投げました。',
@@ -97,7 +98,7 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
     ['renderFps', '画面の FPS'], ['cameraFps', 'カメラ設定 FPS'], ['handFps', '手の検出 / 秒'], ['faceFps', '顔の検出 / 秒'],
     ['handLatencyMs', '手の遅れ'], ['renderMs', '描画の処理時間'],
     ['handMs', '手の処理時間'], ['faceMs', '顔の処理時間'], ['gesture', 'モデルの手の形'], ['confidence', '形の信頼度'],
-    ['openness', '指の開き具合'],
+    ['openness', '指の開き具合'], ['extendedFingers', '伸びた指（親指以外）'], ['thumbOpen', '親指の開き'],
     ['handCount', '検出した手'], ['receiverSeen', '相手の顔'], ['speed', '相手方向の速度'], ['travel', '移動距離'],
     ['duration', '動作の観測時間'], ['gap', '観測の間隔'],
     ['quality', '描画品質'],
@@ -155,7 +156,7 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
     const snapshot = latest, phase = snapshot.phase || 'ready';
     const gestureName = typeof snapshot.gesture === 'object' ? snapshot.gesture?.categoryName : snapshot.gesture;
     const stage = phase === 'flying' || phase === 'worn' ? 3 : phase === 'held'
-      ? snapshot.releaseProgress > 0 || snapshot.reason === 'opening' || snapshot.reason === 'open-confirm' ? 2 : 1 : 0;
+      ? snapshot.releaseProgress > 0 || snapshot.reason === 'opening' || snapshot.reason === 'thumb-closed' || snapshot.reason === 'open-confirm' ? 2 : 1 : 0;
     state.textContent = snapshot.missing ? '手を見失っています · 保持して復帰を待機' : PHASE_NAMES[phase] || phase;
     stageNodes.forEach((node, index) => {
       node.className = index === stage ? 'is-current' : index < stage ? 'is-complete' : '';
@@ -176,6 +177,8 @@ export function setupTrackingDebug({ onChange = () => {}, initialSettings, docum
       handMs: finite(snapshot.handMs, 1, ' ms'), faceMs: finite(snapshot.faceMs, 1, ' ms'),
       gesture: GESTURE_NAMES[gestureName] || gestureName || '—', confidence: finite(Number.isFinite(snapshot.confidence) ? snapshot.confidence * 100 : NaN, 0, '%'),
       openness: finite(Number.isFinite(snapshot.openness) ? snapshot.openness * 100 : NaN, 0, '%'),
+      extendedFingers: finite(snapshot.extendedFingers, 0, ' / 4 本'),
+      thumbOpen: snapshot.thumbOpen === true ? '開いている' : snapshot.thumbOpen === false ? 'まだ開いていない' : '—',
       handCount: finite(snapshot.handCount, 0, ' 本'), receiverSeen: snapshot.receiverSeen ? '検出あり' : '検出なし',
       speed: `${finite(snapshot.speed)} / ${finite(snapshot.minSpeed ?? settings.minSpeed)} px/s`,
       travel: `${finite(snapshot.travel)} / ${finite(snapshot.minDistance ?? settings.minDistance)} px`,

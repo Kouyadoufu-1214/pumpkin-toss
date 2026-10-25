@@ -381,6 +381,121 @@ test('continuous high-rate motion still launches when each individual frame move
   assert.equal(g.release({ x: 425, y: 450 }, 240, { x: 1000 }).ok, true);
 });
 
+test('the same observed throw keeps its outcome from 15 through 120 recognition frames per second', () => {
+  for (const fps of [15, 30, 60, 90, 120]) {
+    for (const direction of [1, -1]) {
+      for (const speed of [120, 200, 1800]) {
+        const g = new TossGesture().configure({ minSpeed: 160, minDistance: 32 });
+        const start = { x: direction > 0 ? 200 : 1080, y: 450 }, duration = 300;
+        const point = time => ({ x: start.x + speed * time / 1000 * direction, y: 450 });
+        g.begin(start, 1000);
+        for (let time = 1000 / fps; time < duration - 1e-8; time += 1000 / fps) g.move(point(time), 1000 + time);
+        const result = g.diagnostics(point(duration), 1000 + duration, { x: start.x + 900 * direction });
+        assert.equal(result.ok, speed >= 160, `${fps} fps at ${speed} px/s, direction ${direction}`);
+        assert.equal(result.fast, speed === 1800, 'extra samples do not change fast-release eligibility');
+        if (speed >= 160) assert.ok(Math.abs(result.speed - speed) < 1e-7);
+      }
+    }
+  }
+});
+
+test('a natural wind-up releases from its most recent observed forward pivot in either direction', () => {
+  for (const direction of [1, -1]) {
+    const origin = direction > 0 ? 500 : 780;
+    const g = new TossGesture().configure({ minSpeed: 160, minDistance: 32 });
+    g.begin({ x: origin, y: 450 }, 1000);
+    for (const [offset, time] of [[-100, 1100], [-150, 1200], [-100, 1250]]) {
+      g.move({ x: origin + offset * direction, y: 450 }, time);
+    }
+    const result = g.diagnostics({ x: origin - 50 * direction, y: 450 }, 1300, { x: origin + 500 * direction });
+    assert.equal(result.ok, true, 'release need not cross the original grab position');
+    assert.equal(result.travel, 100);
+    assert.equal(result.distance, 100);
+    assert.equal(result.duration, 100);
+    assert.equal(result.speed, 1000);
+    assert.equal(result.fast, false, 'a wind-up cannot turn ordinary movement into a fast bypass');
+  }
+});
+
+test('sample rate does not change a wind-up, a retreating release or an expired throw', () => {
+  for (const fps of [15, 30, 60, 90, 120]) {
+    for (const direction of [1, -1]) {
+      const origin = direction > 0 ? 500 : 780, target = { x: origin + 500 * direction };
+      const offset = time => time <= 200 ? -.75 * time : -150 + .5 * (time - 200);
+      const makeThrow = () => {
+        const g = new TossGesture().configure({ minSpeed: 160, minDistance: 32 });
+        g.begin({ x: origin, y: 450 }, 1000);
+        const times = new Set([200, 400]);
+        for (let time = 1000 / fps; time < 400 - 1e-8; time += 1000 / fps) times.add(time);
+        for (const time of [...times].sort((a, b) => a - b)) g.move({ x: origin + offset(time) * direction, y: 450 }, 1000 + time);
+        return g;
+      };
+      const released = { x: origin - 50 * direction, y: 450 };
+      assert.equal(makeThrow().previewRelease(released, 1400, target).ok, true, `${fps} fps wind-up`);
+      const retreat = { x: released.x - 45 * direction, y: 450 };
+      assert.equal(makeThrow().previewRelease(retreat, 1460, target).reason, 'direction', `${fps} fps retreat`);
+      const stale = makeThrow();
+      for (let time = 1450; time <= 1750; time += 50) stale.move(released, time);
+      assert.equal(stale.previewRelease(released, 1750, target).ok, false, `${fps} fps stale swing`);
+    }
+  }
+});
+
+test('a new wind-up cannot borrow speed before its pivot or bypass confirmation with one distant jump', () => {
+  const g = new TossGesture().configure({ minSpeed: 160, minDistance: 32 });
+  g.begin({ x: 300, y: 450 }, 1000);
+  g.move({ x: 500, y: 450 }, 1080);
+  g.move({ x: 350, y: 450 }, 1130);
+  g.move({ x: 370, y: 450 }, 1330);
+  assert.equal(g.previewRelease({ x: 382, y: 450 }, 1450, { x: 1000 }).ok, false, 'old forward speed is not part of the new swing');
+
+  const jump = new TossGesture();
+  jump.begin({ x: 400, y: 450 }, 1000);
+  jump.move({ x: 250, y: 450 }, 1100);
+  assert.deepEqual(jump.previewRelease({ x: 700, y: 450 }, 1200, { x: 1000 }), { ok: true, fast: false });
+});
+
+test('several wind-ups use only the latest turn while small tracking jitter leaves the original swing intact', () => {
+  const g = new TossGesture().configure({ minSpeed: 160, minDistance: 32 });
+  g.begin({ x: 500, y: 450 }, 1000);
+  for (const [x, time] of [[300, 1100], [400, 1200], [330, 1300], [390, 1400]]) g.move({ x, y: 450 }, time);
+  const result = g.diagnostics({ x: 410, y: 450 }, 1450, { x: 1000 });
+  assert.equal(result.ok, true);
+  assert.equal(result.travel, 80);
+  assert.equal(result.duration, 150);
+
+  const noisy = new TossGesture().configure({ minSpeed: 160, minDistance: 32 });
+  noisy.begin({ x: 200, y: 450 }, 1000);
+  noisy.move({ x: 240, y: 450 }, 1100);
+  noisy.move({ x: 237, y: 450 }, 1116);
+  const jittered = noisy.diagnostics({ x: 280, y: 450 }, 1200, { x: 1000 });
+  assert.equal(jittered.ok, true);
+  assert.equal(jittered.travel, 80);
+  assert.equal(jittered.duration, 200, 'a 3 px wobble does not manufacture a new short flick');
+});
+
+test('tiny jitter after stopping cannot refresh an expired swing at any recognition rate', () => {
+  for (const fps of [15, 30, 60, 90, 120]) {
+    for (const direction of [1, -1]) {
+      const origin = direction > 0 ? 200 : 1080, target = { x: origin + 500 * direction };
+      const g = new TossGesture().configure({ minSpeed: 160, minDistance: 32 });
+      g.begin({ x: origin, y: 450 }, 1000);
+      for (let index = 1; index / fps < .1; index++) {
+        g.move({ x: origin + index / fps * 1000 * direction, y: 450 }, 1000 + index / fps * 1000);
+      }
+      const stopped = origin + 100 * direction;
+      g.move({ x: stopped, y: 450 }, 1100);
+      for (let index = 1; index / fps < .35; index++) {
+        const jitter = index % 3 === 0 ? -.4 : .1;
+        g.move({ x: stopped + jitter * direction, y: 450 }, 1100 + index / fps * 1000);
+      }
+      const result = g.diagnostics({ x: stopped + .1 * direction, y: 450 }, 1450, target);
+      assert.equal(result.ok, false, `${fps} fps stationary jitter, direction ${direction}`);
+      assert.equal(result.speed, 0, 'only substantive accumulated movement supplies the last movement time');
+    }
+  }
+});
+
 test('reversing toward the thrower at release rejects the earlier forward speed in either direction', () => {
   for (const direction of [1, -1]) {
     const g = new TossGesture(), start = direction === 1 ? 350 : 900;

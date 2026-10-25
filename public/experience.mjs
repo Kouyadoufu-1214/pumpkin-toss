@@ -1,5 +1,5 @@
 import { clamp, distance, isPinched } from './interaction.mjs';
-import { resolveRoles, chooseControlHand, classifyThrowHand, TossGesture, DwellAction, flightPose, HELD_HAND_GRACE_MS } from './exhibit-logic.mjs?v=20261025-soft-grip';
+import { resolveRoles, chooseControlHand, classifyThrowHand, TossGesture, DwellAction, flightPose, HELD_HAND_GRACE_MS } from './exhibit-logic.mjs?v=20261025-throw-confirmation';
 import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs?v=20261025-dev-tools';
 import { measureFace, faceCoverRegion, fallbackFacePose, manualFaceTarget, smoothFacePose } from './face-fit.mjs?v=20261025-head-cover';
 import { PumpkinArt } from './pumpkin-art.mjs?v=20261020-blank';
@@ -10,9 +10,9 @@ import { drawWorkshopScene } from './workshop-scene.mjs';
 import { setupShareControls } from './share-link.mjs';
 import { HandMotion, SoftFollow } from './hand-motion.mjs?v=20261025-dev-tools';
 import { normalizeTrackingTuning } from './tracking-tuning.mjs';
-import { loadTrackingTuning, setupTrackingDebug } from './tracking-debug.mjs?v=20261025-recognition-fps';
+import { loadTrackingTuning, setupTrackingDebug } from './tracking-debug.mjs?v=20261025-throw-confirmation';
 import { RenderPerformance } from './render-performance.mjs';
-import { ReleaseRecovery } from './release-recovery.mjs?v=20261025-release-recovery';
+import { ReleaseRecovery } from './release-recovery.mjs?v=20261025-throw-confirmation';
 import { InferenceRate } from './inference-rate.mjs';
 
 const $ = id => document.getElementById(id);
@@ -99,6 +99,8 @@ function updateDeveloper(time) {
     handFps: trackingInfo.handFps, handLatencyMs: trackingInfo.handLatencyMs, handMs: trackingInfo.handMs,
     faceMs: trackingInfo.lastFaceMs, phase, gesture: controlHand?.gesture?.categoryName || 'None',
     confidence: controlHand?.gesture?.score, openness: handMissing ? undefined : controlHand?.throwShape?.openness,
+    extendedFingers: handMissing ? undefined : controlHand?.throwShape?.extendedFingers,
+    thumbOpen: handMissing ? undefined : controlHand?.throwShape?.thumbOpen,
     handCount: hands.length, missing: handMissing,
     receiverSeen: !!receiver, speed: metrics?.speed || 0, travel: metrics?.distance || 0,
     duration: metrics?.duration || 0, gap: phase === 'flying' || phase === 'worn'
@@ -246,6 +248,11 @@ function handCameraRoles(time, facesUpdated = true) {
   }
   caster = rememberedRoles.caster?.face || null;
   receiver = solo ? sampleFace('right') : rememberedRoles.receiver?.face || null;
+  // Face and hand inference run independently. Once the receiver really
+  // expires, a later face result must not revive an old pending release.
+  if (source === 'camera' && phase === 'held' && !receiver) {
+    pendingRelease = null; releaseRecovery.reset();
+  }
 }
 function updateCameraLabels() {
   $('source-badge').textContent = source === 'mouse-camera' ? '● LIVE / マウスで投げる' : solo ? '● LIVE / 手で投げる・ひとり練習' : '● LIVE / 手で投げる・2人プレイ';
@@ -615,8 +622,27 @@ function acceptTracking(data) {
     const candidate = toss.diagnostics(point, time, targetNow);
     releaseRecovery.observe({ point, time, shape: controlHand.throwShape, cropped,
       metrics: candidate, target: targetNow, from: heldPose }, now);
+    // Toss history is frozen during confirmation, so keep a separate peak
+    // from every real hand sample. A return from a neutral sample's furthest
+    // position must cancel the pending throw as well.
+    if (pendingRelease && (point.x - pendingRelease.peakX) * pendingRelease.direction < -32) {
+      pendingRelease = null; toss.begin(point, time);
+      debugReason = lastThrowReason = 'direction'; gripped = true; updateTrackingStatus(elapsed); return;
+    }
+    if (pendingRelease && (time - pendingRelease.time > 320 || grip || cropped || !targetNow
+      || Math.sign(targetNow.x - pendingRelease.point.x) !== pendingRelease.direction)) pendingRelease = null;
+    if (pendingRelease && (point.x - pendingRelease.peakX) * pendingRelease.direction > 0) pendingRelease.peakX = point.x;
     if (!open) {
-      debugReason = cropped ? 'edge-hold' : grip ? 'gripping' : 'opening';
+      // A single uncertain finger sample must not restart confirmation at
+      // higher frame rates. Keep the first actual opening briefly, but never
+      // launch from partial fingers alone. Freeze toss history so the saved
+      // release timestamp still describes an observed swing when confirmed.
+      if (pendingRelease && time - pendingRelease.lastOpenTime <= 100) {
+        pendingRelease.lastNeutralTime = time;
+        debugReason = 'open-confirm'; gripped = true; updateTrackingStatus(elapsed); return;
+      }
+      debugReason = cropped ? 'edge-hold' : grip ? 'gripping'
+        : controlHand.throwShape.extendedFingers === 4 && !controlHand.throwShape.thumbOpen ? 'thumb-closed' : 'opening';
       pendingRelease = null;
       if (!toss.move(point, time)) toss.begin(point, time);
     }
@@ -629,7 +655,9 @@ function acceptTracking(data) {
       }
       // Keep holding through partial opening. Once fully open, confirm only a
       // qualifying swing, preserving its observed position through short gaps.
-      if (pendingRelease && time - pendingRelease.time > 320) pendingRelease = null;
+      // A positive sample can follow the last brief neutral sample at a slow
+      // camera cadence. A long gap after that uncertainty needs a fresh start.
+      if (pendingRelease?.lastNeutralTime !== undefined && time - pendingRelease.lastNeutralTime > 100) pendingRelease = null;
       if (!pendingRelease && !candidate.ok) {
         debugReason = candidate.distance >= 24 || candidate.reason === 'no-receiver' ? candidate.reason : 'gripping';
         if (candidate.distance >= 24) rememberThrowCheck(candidate);
@@ -637,9 +665,12 @@ function acceptTracking(data) {
         gripped = true; updateTrackingStatus(elapsed); return;
       }
       if (!pendingRelease) {
-        pendingRelease = { point: { ...point }, time, from: { ...heldPose } }; debugReason = 'open-confirm';
+        pendingRelease = { point: { ...point }, time, lastOpenTime: time, peakX: point.x,
+          direction: Math.sign(targetNow.x - point.x), from: { ...heldPose } }; debugReason = 'open-confirm';
         if (trackingTuning.openConfirmMs > 0) { updateTrackingStatus(elapsed); return; }
       }
+      pendingRelease.lastOpenTime = time;
+      delete pendingRelease.lastNeutralTime;
       if (time - pendingRelease.time < trackingTuning.openConfirmMs) return;
       const { point: releasePoint, time: releaseTime, from } = pendingRelease;
       pendingRelease = null;

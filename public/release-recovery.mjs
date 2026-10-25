@@ -55,8 +55,10 @@ export class ReleaseRecovery {
     }
     if (!this.direction) { this.clearEvidence(); return; }
 
-    const latest = this.samples.at(-1);
-    const reversed = latest && (point.x - latest.point.x) * this.direction < 0;
+    // Small landmark jitter must not erase a real swing. Compare with the
+    // recent furthest position, so a gradual backswing still clears evidence.
+    const reversed = this.samples.some(item => time - item.time <= EVIDENCE_MS
+      && (item.point.x - point.x) * this.direction > 32);
     if (reversed) {
       // A new backswing cannot borrow the earlier swing's opening evidence.
       this.clearEvidence();
@@ -86,19 +88,29 @@ export class ReleaseRecovery {
       && shape.openness - item.shape.openness >= .1 - 1e-12);
     if (!curled) return;
 
-    // Two real forward segments are needed, including the newest segment.
-    // This rejects a single landmark jump and a partly open hand that stops.
+    // Two real forward windows are needed, including the newest window.
+    // Aggregate high-rate samples over at least 25ms instead of rejecting
+    // individual frames shorter than 15ms. Windows do not overlap, so a single
+    // landmark jump cannot provide both pieces of swing evidence.
     let segments = 0, travel = 0, vertical = 0, elapsed = 0;
-    for (let index = this.samples.length - 1; index > 0; index--) {
-      const last = this.samples[index], first = this.samples[index - 1];
+    for (let index = this.samples.length - 1; index > 0;) {
+      const last = this.samples[index];
+      let firstIndex = index - 1;
+      while (firstIndex >= 0 && last.time - this.samples[firstIndex].time < 25) firstIndex--;
+      if (firstIndex < 0) break;
+      const first = this.samples[firstIndex];
       const gap = last.time - first.time;
       const dx = (last.point.x - first.point.x) * this.direction;
-      const dy = Math.abs(last.point.y - first.point.y);
-      if (gap < 15 || gap > 160 || dx < 8 || dx < dy) break;
+      let dy = 0;
+      for (let step = firstIndex + 1; step <= index; step++) {
+        dy += Math.abs(this.samples[step].point.y - this.samples[step - 1].point.y);
+      }
+      if (gap > 160 || dx < 8 || dx < dy) break;
       segments++;
       travel += dx;
       vertical += dy;
       elapsed += gap;
+      index = firstIndex;
     }
     if (segments < 2 || travel < 100 || travel < vertical || travel / elapsed * 1000 < 700) return;
     this.candidate = { point: { ...point }, time, from: copyPose(from), kind: 'opening-swing' };

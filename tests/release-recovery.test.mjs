@@ -54,6 +54,57 @@ test('rapid opening swing recovers in both directions using only the last real p
   }
 });
 
+test('the same opening swing recovers at 15 through 120 observations per second', () => {
+  for (const fps of [15, 30, 60, 90, 120]) {
+    for (const direction of [1, -1]) {
+      const recovery = new ReleaseRecovery(), receiver = direction > 0 ? target : { x: 100, y: 300 };
+      const start = direction > 0 ? 200 : 900, count = fps / 5;
+      for (let index = 0; index <= count; index++) {
+        const elapsed = index / fps * 1000;
+        observation(recovery, start + direction * elapsed * 1.1, 1000 + elapsed,
+          index === count ? partial : curled, { target: receiver });
+      }
+      const result = recovery.recover(1250, 1250, receiver);
+      assert.equal(result?.kind, 'opening-swing', `${fps} fps, direction ${direction}`);
+      assert.equal(result.time, 1200);
+      assert.deepEqual(result.point, { x: start + direction * 220, y: 400 });
+    }
+  }
+});
+
+test('high-rate windows preserve speed, distance, closure and single-jump safeguards', () => {
+  for (const fps of [15, 30, 60, 90, 120]) {
+    for (const scenario of ['slow', 'short', 'closed', 'single-jump']) {
+      const recovery = new ReleaseRecovery(), count = scenario === 'short' ? fps / 15 : fps / 5;
+      for (let index = 0; index <= count; index++) {
+        const elapsed = index / fps * 1000;
+        const travel = scenario === 'single-jump' ? index === count ? 220 : 0
+          : elapsed * (scenario === 'slow' ? .6 : 1.1);
+        observation(recovery, 200 + travel, 1000 + elapsed,
+          index === count && scenario !== 'closed' ? partial : curled);
+      }
+      const missingAt = 1000 + count / fps * 1000 + 50;
+      assert.equal(recovery.recover(missingAt, missingAt, target), null, `${scenario} at ${fps} fps`);
+    }
+  }
+});
+
+test('small reverse jitter keeps observed opening, but a cumulative backswing clears it', () => {
+  const recovery = new ReleaseRecovery();
+  openingSwing(recovery, { end: open });
+  observation(recovery, 329, 1120, open);
+  observation(recovery, 330, 1140, open);
+  assert.equal(recovery.recover(1180, 1180, target)?.time, 1100);
+
+  recovery.reset();
+  openingSwing(recovery, { end: open });
+  observation(recovery, 315, 1120, open);
+  observation(recovery, 300, 1140, open);
+  observation(recovery, 297, 1160, open);
+  assert.equal(recovery.recover(1200, 1200, target), null,
+    'several small backward steps must not evade the 32px reversal limit');
+});
+
 test('closed-fist speed and missing hands alone never release', () => {
   const recovery = new ReleaseRecovery();
   openingSwing(recovery, { end: curled });
@@ -86,7 +137,7 @@ test('a newly held, closed, reversed or low-confidence frame replaces partial el
 
 test('contradictory full-open evidence is cleared on closure, reversal and cropping', () => {
   for (const [x, shape, options] of [
-    [360, curled, {}], [320, open, {}], [370, open, { cropped: true }],
+    [360, curled, {}], [297, open, {}], [370, open, { cropped: true }],
   ]) {
     const recovery = new ReleaseRecovery();
     openingSwing(recovery, { end: open });
