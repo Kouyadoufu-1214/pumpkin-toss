@@ -139,6 +139,19 @@ test('record preserves fast inference transitions without DOM work and ignores e
   assert.equal(history.children.length, 3);
 });
 
+test('an already open palm waits for a swing instead of displaying a release', () => {
+  const h = harness();
+  h.api.toggle(true);
+  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, '手を映す');
+  assert.equal(h.find(node => node.className === 'tracking-debug__state').textContent, '手を待っています');
+  h.api.update({ phase: 'held', reason: 'gripping', gesture: 'Open_Palm', releaseProgress: 0 }, 200);
+  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, '相手へ振る');
+  assert.equal(h.find(node => node.id === 'tracking-debug-release').value, 0);
+  assert.ok(h.find(node => node.className === 'tracking-debug__reason').textContent.includes('手を認識して保持'));
+  h.api.update({ phase: 'held', reason: 'open-confirm', gesture: 'Open_Palm', releaseProgress: .5 }, 400);
+  assert.equal(h.find(node => node.attributes.get('aria-current') === 'step').textContent, 'パーで離す');
+});
+
 test('bone overlay uses raw mapped points only while enabled, preserves the canvas, and never draws a cached missing hand', () => {
   const h = harness(), calls = [], context = {};
   for (const name of ['save', 'restore', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'arc', 'fill', 'fillRect', 'fillText']) {

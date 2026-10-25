@@ -77,6 +77,40 @@ export function handGrip(points, previous = false, gesture = null, worldPoints =
     || (previous && possibleFist && gesture.score >= .55 && folded >= 1 && extended < 2);
 }
 
+export function handOpen(points, gesture = null, worldPoints = null, options = {}) {
+  if (points?.length !== 21 || !points.every(finitePoint)) return false;
+  const spatial = worldPoints?.length === 21 && worldPoints.every(point => finitePoint(point) && Number.isFinite(point.z));
+  const shape = spatial ? worldPoints : points;
+  const delta = (a, b) => [a.x - b.x, a.y - b.y, spatial ? a.z - b.z : 0];
+  const length = vector => Math.hypot(...vector);
+  const span = (a, b) => length(delta(a, b));
+  const palm = Math.max(span(shape[5], shape[17]), span(shape[0], shape[9]) * .65,
+    (span(shape[0], shape[5]) + span(shape[0], shape[17])) * .325);
+  if (palm < 1e-6) return false;
+  const confidence = Number.isFinite(options?.confidence) ? clamp(options.confidence, .5, .95) : .7;
+  const validScore = Number.isFinite(gesture?.score) && gesture.score >= 0 && gesture.score <= 1;
+  if (validScore && gesture.score >= confidence) {
+    if (gesture.categoryName === 'Open_Palm') return true;
+    if (['Closed_Fist', 'Pointing_Up', 'Thumb_Down', 'Thumb_Up', 'Victory', 'ILoveYou'].includes(gesture.categoryName)) return false;
+  }
+  // An unknown pose is not an open palm. Without a confident classifier,
+  // require actual straight finger chains, with no thumb/index pinch.
+  if (span(shape[4], shape[8]) / palm < .46) return false;
+  let extended = 0;
+  for (const base of [5, 9, 13, 17]) {
+    const segments = [delta(shape[base + 1], shape[base]), delta(shape[base + 2], shape[base + 1]),
+      delta(shape[base + 3], shape[base + 2])];
+    const lengths = segments.map(length);
+    if (!lengths.every(value => value > palm * .03)) continue;
+    const reach = span(shape[base + 3], shape[base]) / lengths.reduce((sum, value) => sum + value, 0);
+    const cosine = (a, b, magnitude) => a.reduce((sum, value, index) => sum + value * b[index], 0) / magnitude;
+    const bend = Math.min(cosine(segments[0], segments[1], lengths[0] * lengths[1]),
+      cosine(segments[1], segments[2], lengths[1] * lengths[2]));
+    if (reach > .88 && bend > .7) extended++;
+  }
+  return extended >= 3;
+}
+
 export function chooseControlHand(hands, previous, { width = 1280, swapped = false, solo = false, elapsed = 80, anchor = null, preferGrip = false, gripOptions = null, fastMotion = false, recoverHeld = false } = {}) {
   const valid = hands.filter(hand => finitePoint(hand.palm) && finitePoint(hand.wrist));
   if (previous) {

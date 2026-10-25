@@ -1,5 +1,5 @@
 import { clamp, distance, isPinched } from './interaction.mjs';
-import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose, HELD_HAND_GRACE_MS } from './exhibit-logic.mjs?v=20261025-dev-tools';
+import { resolveRoles, chooseControlHand, handOpen, TossGesture, DwellAction, flightPose, HELD_HAND_GRACE_MS } from './exhibit-logic.mjs?v=20261025-open-palm';
 import { Pumpkin3D, faceQuaternion, blendOrientation } from './pumpkin-3d.mjs?v=20261025-dev-tools';
 import { measureFace, faceCoverRegion, fallbackFacePose, manualFaceTarget, smoothFacePose } from './face-fit.mjs?v=20261025-head-cover';
 import { PumpkinArt } from './pumpkin-art.mjs?v=20261020-blank';
@@ -10,7 +10,7 @@ import { drawWorkshopScene } from './workshop-scene.mjs';
 import { setupShareControls } from './share-link.mjs';
 import { HandMotion, SoftFollow } from './hand-motion.mjs?v=20261025-dev-tools';
 import { normalizeTrackingTuning } from './tracking-tuning.mjs';
-import { loadTrackingTuning, setupTrackingDebug } from './tracking-debug.mjs?v=20261025-dev-tools';
+import { loadTrackingTuning, setupTrackingDebug } from './tracking-debug.mjs?v=20261025-open-palm';
 import { RenderPerformance } from './render-performance.mjs';
 
 const $ = id => document.getElementById(id);
@@ -229,16 +229,16 @@ function handCameraRoles(time, facesUpdated = true) {
 }
 function updateCameraLabels() {
   $('source-badge').textContent = source === 'mouse-camera' ? '● LIVE / マウスで投げる' : solo ? '● LIVE / 手で投げる・ひとり練習' : '● LIVE / 手で投げる・2人プレイ';
-  $('stage-note').textContent = source === 'mouse-camera' ? 'かぼちゃをドラッグして投げる。顔をクリックすると、かぶせる位置を指定できます。' : `画面の${swapped ? '右' : '左'}半分でグー → 手にかぼちゃ → 相手へ動かしてパー。`;
+  $('stage-note').textContent = source === 'mouse-camera' ? 'かぼちゃをドラッグして投げる。顔をクリックすると、かぶせる位置を指定できます。' : `画面の${swapped ? '右' : '左'}半分に手を映す → 手にかぼちゃ → パーで相手へ振る。`;
   $('live-status').hidden = false;
   $('target-auto').hidden = source !== 'mouse-camera' || !manualTarget;
 }
 function updateTrackingStatus(elapsed = 0) {
   debugControls?.record?.({ phase, reason: debugReason }, performance.now());
-  const engine = trackingInfo.handEngine === 'gesture-recognizer' ? 'グー・パー認識' : trackingInfo.handEngine === 'hand-landmarker' ? '指の位置で認識' : '手の認識なし';
+  const engine = trackingInfo.handEngine === 'gesture-recognizer' ? 'パー認識' : trackingInfo.handEngine === 'hand-landmarker' ? '指の位置で認識' : '手の認識なし';
   const status = phase === 'worn' ? receiver?.measured && !receiver.manual ? '髪・耳まで覆うサイズで追従中' : '投球完了 · カメラ映像はそのまま表示中' : phase === 'flying' ? '投げられた！ かぼちゃが相手の頭へ' : source === 'mouse-camera'
     ? manualTarget ? '位置を指定中 · マウスで投げられます' : faces.length ? '頭全体にサイズ調整中 · マウスで投げられます' : '顔をクリックして位置を指定できます'
-    : `顔 ${faces.length}人 · 手 ${hands.length}本 · ${phase === 'held' ? handMissing ? 'つかんだまま待っています · 手を画面に戻して続けよう' : receiver ? 'つかんだ！ 相手へ動かしてパー' : 'つかんだ！ かぶる人の顔をカメラへ' : controlHand ? '手を認識！ グーにすると持てます' : hands.length ? `投げる人は画面の${swapped ? '右' : '左'}半分でグー` : '手が見つかりません · 少し近づいて手のひらを見せよう'}`;
+    : `顔 ${faces.length}人 · 手 ${hands.length}本 · ${phase === 'held' ? handMissing ? '持ったまま待っています · 手を画面に戻して続けよう' : receiver ? '手にかぼちゃ！ パーで相手へ振ろう' : '手にかぼちゃ！ かぶる人の顔をカメラへ' : controlHand ? '手を認識しました' : hands.length ? `画面の${swapped ? '右' : '左'}半分に手を映そう` : '手が見つかりません · 少し近づいて手のひらを見せよう'}`;
   if (status !== lastTrackingText) { $('live-status').textContent = status; lastTrackingText = status; }
   const rate = source === 'camera' ? trackingInfo.handFps : elapsed ? Math.round(1000 / elapsed) : null;
   $('tracking-status').textContent = `${engine} / 顔 ${faces.length}人 / 手 ${hands.length}本 / 検出 ${rate || '—'}回/秒${Number.isFinite(trackingInfo.handLatencyMs) ? ` / 手の応答 ${trackingInfo.handLatencyMs}ms` : ''}`;
@@ -262,7 +262,7 @@ function expireTracking(time) {
   // Empty results can arrive repeatedly; they must not extend the last real
   // hand's grace period if the worker subsequently stalls.
   if (source === 'camera' && !carving && phase === 'held' && handSeenAt && time - handSeenAt > HELD_HAND_GRACE_MS) {
-    cancelHold('手を画面に戻して、もう一度グーにしよう'); debugReason = lastThrowReason = 'missing-hand'; updateTrackingStatus();
+    cancelHold('手を画面に戻すと、もう一度持てます'); debugReason = lastThrowReason = 'missing-hand'; updateTrackingStatus();
   }
   if (!lastResult || time - lastResult <= 900) return;
   faces = []; hands = [];
@@ -327,7 +327,7 @@ async function startCamera(practice = false, input = 'hand', reuse = true) {
     clearTimeout(initTimer); refreshCameraList();
     stream.getVideoTracks()[0].onended = () => { if (id === session) { startSample('mouse'); notice('カメラが切断されました。接続して再開してください。'); } };
     $('loading').classList.add('camera-live');
-    $('loading-title').textContent = input === 'mouse' ? '顔への自動追従を準備中' : 'グー・パーの認識を準備中';
+    $('loading-title').textContent = input === 'mouse' ? '顔への自動追従を準備中' : '手とパーの認識を準備中';
     $('loading-detail').textContent = input === 'mouse' ? '映像を見ながら、先にマウスで投げられます。' : '映像は表示中です。「映像＋マウスで投げる」にも切り替えられます。';
     if (input === 'mouse') { mouseCameraRoles(); updateTrackingStatus(); }
     initTimer = setTimeout(() => { if (id === session) trackingFallback('認識の準備に時間がかかっています。映像を残してマウス操作に切り替えました。'); }, 45000);
@@ -424,7 +424,7 @@ function acceptTracking(data) {
   if (!carving && pointer !== null) return;
   const previous = controlHand, gap = handSeenAt ? time - handSeenAt : elapsed;
   trackingInfo.handSampleGapMs = gap;
-  controlHand = chooseControlHand(hands, phase === 'held' || carving ? previous : null, { ...roleOptions(), elapsed: gap, anchor: restPose(time), preferGrip: !carving && phase === 'ready', fastMotion: !carving && phase === 'held', recoverHeld: !carving && phase === 'held', gripOptions: { confidence: trackingTuning.gestureConfidence } });
+  controlHand = chooseControlHand(hands, phase === 'held' || carving ? previous : null, { ...roleOptions(), elapsed: gap, anchor: restPose(time), fastMotion: !carving && phase === 'held', recoverHeld: !carving && phase === 'held' });
   if (!carving && (phase === 'flying' || phase === 'worn')) {
     // Keep live skeletons available after a throw without treating the next
     // absent/receiver-side hand as a failure of the throw that already finished.
@@ -445,7 +445,7 @@ function acceptTracking(data) {
       controlHand = previous; handMissing = holdRecovery = true; debugReason = 'missing-hand'; updateTrackingStatus(elapsed); return;
     }
     if (previous && phase === 'held') lastThrowReason = 'missing-hand';
-    cancelHold(previous && phase === 'held' ? '手を見失いました。投げる側で、もう一度グーにしよう' : null);
+    cancelHold(previous && phase === 'held' ? '手を見失いました。投げる側に手を映すと、もう一度持てます' : null);
     debugReason = hands.length ? 'wrong-side' : 'waiting-hand'; dwell.reset(); updateTrackingStatus(elapsed); return;
   }
   handMissing = false;
@@ -461,12 +461,12 @@ function acceptTracking(data) {
   }
   const gesture = controlHand.gesture, point = controlHand.palm, nearEdge = handAtCameraEdge(controlHand);
   const confidentOpen = gesture?.categoryName === 'Open_Palm' && gesture.score >= trackingTuning.gestureConfidence && gesture.score <= 1;
-  // Cropped fingertips can look straight to landmark geometry. Preserve an
-  // existing grip at the edge unless the recognizer actually sees an open palm.
-  const observedGrip = handGrip(controlHand.points, gripped, gesture, controlHand.worldPoints, { confidence: trackingTuning.gestureConfidence });
-  const grip = observedGrip || phase === 'held' && nearEdge && !confidentOpen
+  // Acquiring a pumpkin never requires a fist. Releasing requires positive
+  // open-palm evidence; an unknown or cropped shape is not an opening.
+  const cropped = nearEdge && !confidentOpen
     && (trackingInfo.handEngine !== 'hand-landmarker' || handAtCameraEdge(controlHand, 0));
-  if (phase === 'ready' && grip) {
+  const open = !cropped && handOpen(controlHand.points, gesture, controlHand.worldPoints, { confidence: trackingTuning.gestureConfidence });
+  if (phase === 'ready') {
     pendingRelease = null;
     handMotion.reset(); softFollow.reset(); handMotion.observe(point, time); debugReason = 'gripping';
     toss.begin(point, time); phase = 'held'; heldPose = { ...restPose(time), x: point.x, y: point.y };
@@ -477,27 +477,30 @@ function acceptTracking(data) {
     }
     handMotion.observe(point, time);
     heldPose.x = point.x; heldPose.y = point.y;
-    if (grip) {
-      debugReason = observedGrip ? 'gripping' : 'edge-hold';
+    if (!open) {
+      debugReason = cropped ? 'edge-hold' : 'gripping';
       pendingRelease = null;
-      if (observedGrip) holdRecovery = false;
       if (!toss.move(point, time)) toss.begin(point, time);
     }
     else {
       const targetNow = currentTarget();
-      if (confidentOpen) {
-        const quick = toss.diagnostics(point, time, targetNow);
-        if (quick.ok && quick.fast) {
-          rememberThrowCheck(quick);
-          const from = displayHeldPose(now);
-          toss.release(point, time, targetNow); pendingRelease = null;
-          launch(from, targetNow); updateTrackingStatus(elapsed); return;
-        }
+      const candidate = toss.diagnostics(point, time, targetNow);
+      if (confidentOpen && candidate.ok && candidate.fast) {
+        rememberThrowCheck(candidate);
+        const from = displayHeldPose(now);
+        toss.release(point, time, targetNow); pendingRelease = null;
+        launch(from, targetNow); updateTrackingStatus(elapsed); return;
       }
-      // Confirm an open hand on another observation. A single uncertain frame
-      // must not drop the pumpkin. Use the first opening's time and position so
-      // a slow recognition rate does not erase the actual throwing motion.
+      // A palm can stay open from the very first frame. Start confirmation only
+      // once a real swing qualifies; otherwise keep accumulating observed
+      // motion while holding, rather than repeatedly dropping a still palm.
       if (pendingRelease && time - pendingRelease.time > 320) pendingRelease = null;
+      if (!pendingRelease && !candidate.ok) {
+        debugReason = candidate.distance >= 24 || candidate.reason === 'no-receiver' ? candidate.reason : 'gripping';
+        if (candidate.distance >= 24) rememberThrowCheck(candidate);
+        if (!toss.move(point, time)) toss.begin(point, time);
+        gripped = true; updateTrackingStatus(elapsed); return;
+      }
       if (!pendingRelease) {
         pendingRelease = { point: { ...point }, time, from: { ...heldPose } }; debugReason = 'open-confirm';
         if (trackingTuning.openConfirmMs > 0) { updateTrackingStatus(elapsed); return; }
@@ -506,19 +509,19 @@ function acceptTracking(data) {
       const { point: releasePoint, time: releaseTime, from } = pendingRelease;
       pendingRelease = null;
       const target = currentTarget(), direction = Math.sign((target?.x ?? releasePoint.x) - (toss.start?.x ?? releasePoint.x)) || 1;
-      if ((point.x - releasePoint.x) * direction < -32) { cancelHold(); debugReason = lastThrowReason = 'direction'; notice('相手のほうへ手を動かしながら、パーにしよう'); updateTrackingStatus(elapsed); return; }
+      if ((point.x - releasePoint.x) * direction < -32) { toss.begin(point, time); debugReason = lastThrowReason = 'direction'; notice('パーで相手のほうへ振ろう'); updateTrackingStatus(elapsed); return; }
       rememberThrowCheck(toss.diagnostics(releasePoint, releaseTime, target));
       const result = toss.release(releasePoint, releaseTime, target);
       if (result.ok) launch(displayHeldPose(now) || from, target);
-      else if (nearEdge || holdRecovery) {
-        // A cropped/reacquired hand with no measured swing keeps its pumpkin.
+      else {
+        // Failed attempts stay attached to the hand; retrying needs no fist.
         toss.begin(point, time);
         debugReason = result.reason;
         if (result.reason === 'no-receiver') notice('相手の顔をカメラに映そう');
-      } else { cancelHold(); debugReason = result.reason; notice(result.reason === 'no-receiver' ? '相手の顔をカメラに映そう' : '相手のほうへ、少し大きく振って手を開こう'); }
+      }
     }
   }
-  gripped = grip;
+  gripped = phase === 'held';
   updateTrackingStatus(elapsed);
 }
 
@@ -701,8 +704,8 @@ function burst(pose, time) {
 function updateCue() {
   if (carving) { cue('HALLOWEEN WORKSHOP', '月夜のかぼちゃ工房', source === 'camera' ? '親指と人差し指をつまんで、きみだけの顔を彫ろう。' : 'マウスでひと彫り。きみだけのジャックオランタンに。'); return; }
   if (source === 'guide') return;
-  if (phase === 'ready') cue('01 / つかむ', mouseControl() ? 'カボチャを、つかもう。' : `画面の${swapped ? '右' : '左'}側で、グーにしよう。`, mouseControl() ? 'カボチャをマウスでつかんで、相手のほうへ。' : '握った手にかぼちゃが現れます。つまんでもOK。');
-  if (phase === 'held') cue('02 / 投げる', handMissing ? '大丈夫、まだ持っています。' : source === 'camera' && !receiver ? '持てた！ 相手の顔を映そう。' : '相手へ振って、パッとはなす！', handMissing ? '手を画面に戻すと、そのまま続けられます。' : mouseControl() ? '少し大きく動かして、マウスをはなそう。' : !receiver ? `かぶる人は画面の${swapped ? '左' : '右'}側で、顔をカメラへ向けてね。` : '相手の方向へ手を動かしながら、パーにしよう。');
+  if (phase === 'ready') cue(mouseControl() ? '01 / つかむ' : '01 / 手を映す', mouseControl() ? 'カボチャを、つかもう。' : `画面の${swapped ? '右' : '左'}側に、手を映そう。`, mouseControl() ? 'カボチャをマウスでつかんで、相手のほうへ。' : '手にかぼちゃが現れます。最初からパーでOK。');
+  if (phase === 'held') cue('02 / 投げる', handMissing ? '大丈夫、まだ持っています。' : source === 'camera' && !receiver ? '持てた！ 相手の顔を映そう。' : mouseControl() ? '相手へ振って、パッとはなす！' : 'パーで相手へ、ポイッ！', handMissing ? '手を画面に戻すと、そのまま続けられます。' : mouseControl() ? '少し大きく動かして、マウスをはなそう。' : !receiver ? `かぶる人は画面の${swapped ? '左' : '右'}側で、顔をカメラへ向けてね。` : '手を開いたまま、相手の方向へ振ろう。握る必要はありません。');
   if (phase === 'flying') cue('02 / 投げる', 'いっけー！', 'カボチャが、相手の頭へ。');
   if (phase === 'worn') cue('03 / かぶる', receiver ? 'スポッ！ お似合い！' : 'かぶる人は、同じ側へ戻ってね', receiver ? receiver.manual ? '指定した位置にかぶせました。もう一度投げたり、展示したりできます。' : '髪や耳まで、頭をすっぽり。近づいてもついてくる。' : '顔が映ったら、カボチャが戻ります。');
 }
@@ -741,10 +744,10 @@ function renderScene(time) {
     let demoHand = { x: rest.x - direction * 50, y: rest.y + 60 };
     if (t < 3) {
       const p = clamp(t / 2, 0, 1); demoHand = { x: rest.x - direction * 50 * (1 - p), y: rest.y + 60 * (1 - p) }; pose = rest;
-      cue('お手本 / 01', 'カボチャを、つかもう。', 'カメラに映る自分の手で、ぎゅっとつかむ。');
+      cue('お手本 / 01', 'カメラに手を映そう。', '手にかぼちゃが現れます。最初からパーでOK。');
     } else if (t < 5.2) {
       const p = (t - 3) / 2.2; demoHand = { x: rest.x + direction * (p * p * 180 - Math.sin(p * Math.PI) * 50), y: rest.y - p * 105 }; pose = { ...rest, ...demoHand };
-      cue('お手本 / 02', '相手へ振って、パッとはなす！', '手を開くと、カボチャが画面の中を飛んでいく。');
+      cue('お手本 / 02', 'パーで相手へ、ポイッ！', '開いた手を相手へ振ると、カボチャが飛んでいく。');
     } else if (t < 6.5) {
       pose = flightPose({ ...rest, x: rest.x + direction * 180, y: rest.y - 105 }, target, (t - 5.2) / 1.3);
       demoHand = { x: rest.x + direction * 100, y: rest.y - 80 };

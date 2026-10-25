@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { clamp, distance, isPinched } from '../public/interaction.mjs';
-import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, HELD_HAND_GRACE_MS } from '../public/exhibit-logic.mjs';
+import { resolveRoles, chooseControlHand, handOpen, TossGesture, DwellAction, HELD_HAND_GRACE_MS } from '../public/exhibit-logic.mjs';
 import { FACE_OVAL, measureFace, fallbackFacePose, manualFaceTarget } from '../public/face-fit.mjs';
 import { HandMotion, SoftFollow } from '../public/hand-motion.mjs';
 import { RenderPerformance } from '../public/render-performance.mjs';
@@ -82,7 +82,7 @@ function cameraHarness({ getUserMedia, play } = {}) {
   const context = vm.createContext({
     W: 1280, H: 720, $: element, canvas, video, window, document,
     art: { cancel() {}, base: null }, toss, dwell: new DwellAction(), pumpkin: undefined,
-    clamp, distance, isPinched, resolveRoles, chooseControlHand, handGrip, HandMotion, SoftFollow, RenderPerformance, HELD_HAND_GRACE_MS,
+    clamp, distance, isPinched, resolveRoles, chooseControlHand, handOpen, HandMotion, SoftFollow, RenderPerformance, HELD_HAND_GRACE_MS,
     normalizeTrackingTuning, loadTrackingTuning: () => ({ ...DEFAULT_TRACKING_TUNING }),
     measureFace, fallbackFacePose, manualFaceTarget,
     faceQuaternion: () => null,
@@ -394,7 +394,7 @@ test('a clicked manual target keeps its position and manual flag throughout flig
   }
 });
 
-test('a fist anywhere on the throwing side grabs immediately and throws at sparse camera intervals', () => {
+test('a hand anywhere on the throwing side holds immediately and can open later at sparse camera intervals', () => {
   const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
   const faces = [faceLandmarks(.25, .4), faceLandmarks(.75, .4)];
   const frame = (time, x, y, open = false) => {
@@ -405,7 +405,7 @@ test('a fist anywhere on the throwing side grabs immediately and throws at spars
     });
   };
   frame(1000, 180, 430);
-  assert.equal(h.state().phase, 'held', 'a fist away from the resting pumpkin can summon it');
+  assert.equal(h.state().phase, 'held', 'a hand away from the resting pumpkin can summon it');
   frame(1500, 180, 430);
   frame(1750, 350, 430);
   assert.equal(h.state().phase, 'held');
@@ -421,13 +421,77 @@ test('a fist anywhere on the throwing side grabs immediately and throws at spars
   assert.equal(h.state().flight.target.x, 960);
 });
 
-test('a fist can summon and hold a pumpkin before either face is detected', () => {
+test('an always-open palm holds still and then throws without any fist on either side', () => {
+  for (const swapped of [false, true]) {
+    const h = cameraHarness(); h.run(`source = 'camera'; swapped = ${swapped}; resetRound();`);
+    const frame = (time, x) => {
+      h.setNow(time); h.track({ faces: [faceLandmarks(swapped ? .25 : .75)],
+        hands: [handLandmarks(swapped ? 1280 - x : x, 400, true)],
+        gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
+    };
+    for (const time of [1000, 1200, 1400, 1600, 1800, 2000]) {
+      frame(time, 150);
+      assert.equal(h.state().phase, 'held');
+      assert.equal(h.run('pendingRelease'), null, 'stationary open palm never starts release confirmation');
+      assert.equal(h.effects.release, 0);
+    }
+    frame(2150, 270);
+    assert.equal(h.state().phase, 'held');
+    assert.ok(h.run('pendingRelease'), 'a qualifying open-palm swing starts confirmation');
+    frame(2250, 360);
+    assert.equal(h.state().phase, 'flying');
+    assert.equal(h.effects.release, 1);
+    assert.equal(h.state().flight.target.x, swapped ? 320 : 960);
+  }
+});
+
+test('unknown hand shapes can hold and move, but only a positive palm can release', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  const frame = (time, x, open = false) => {
+    h.setNow(time); h.track({ faces: [faceLandmarks(.75)],
+      hands: [handLandmarks(x, 400, open)], gestures: [[{ categoryName: 'None', score: .9 }]] });
+  };
+  frame(1000, 150); frame(1150, 270); frame(1300, 370);
+  assert.equal(h.state().phase, 'held');
+  assert.equal(h.effects.release, 0, 'motion with an unrecognized shape cannot release');
+  frame(1450, 470, true); frame(1550, 480, true);
+  assert.equal(h.state().phase, 'flying', 'positive finger geometry works without a fist label or palm classifier');
+});
+
+test('a palm present before the receiver appears stays held and can throw without re-gripping', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  for (const time of [1000, 1200, 1400]) {
+    h.setNow(time); h.track({ hands: [handLandmarks(150, 400, true)],
+      gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
+    assert.equal(h.state().phase, 'held');
+    assert.equal(h.state().flight, null);
+  }
+  for (const [time, x] of [[1600, 150], [1750, 270], [1850, 360]]) {
+    h.setNow(time); h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(x, 400, true)],
+      gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
+  }
+  assert.equal(h.state().phase, 'flying');
+});
+
+test('a failed slow palm swing keeps its history so a later faster swing works without closing', () => {
+  const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
+  const frame = (time, x) => {
+    h.setNow(time); h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(x, 400, true)],
+      gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
+  };
+  frame(1000, 150); frame(1400, 180); frame(1800, 210);
+  assert.equal(h.state().phase, 'held'); assert.equal(h.effects.release, 0);
+  frame(1950, 330); frame(2050, 420);
+  assert.equal(h.state().phase, 'flying');
+});
+
+test('a hand can summon and hold a pumpkin before either face is detected', () => {
   const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
   h.track({ hands: [handLandmarks(150, 250)], gestures: [[{ categoryName: 'Closed_Fist', score: .95 }]] });
   assert.equal(h.state().phase, 'held');
   assert.ok(h.state().heldPose);
   assert.equal(h.state().receiver, null);
-  assert.match(h.element('live-status').textContent, /つかんだ.*顔/);
+  assert.match(h.element('live-status').textContent, /手にかぼちゃ.*顔/);
   h.setNow(1200); h.track({ hands: [handLandmarks(220, 250)] });
   assert.equal(h.state().phase, 'held', 'missing faces cannot cancel a held pumpkin');
 });
@@ -456,9 +520,9 @@ test('a brief face miss retains the receiver, but an expired face never becomes 
   for (const time of [2000, 2100]) {
     h.setNow(time); h.track({ hands: [handLandmarks(450, 400, true)], gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
   }
-  assert.equal(h.state().phase, 'ready');
+  assert.equal(h.state().phase, 'held', 'a missing receiver keeps the pumpkin on the hand for retry');
   assert.equal(h.state().flight, null);
-  assert.match(h.element('message').textContent, /相手の顔/);
+  assert.equal(h.run('debugReason'), 'no-receiver');
 });
 
 test('hand loss retains the held pose for 1.5 seconds without releasing, then cancels safely', () => {
@@ -471,7 +535,7 @@ test('hand loss retains the held pose for 1.5 seconds without releasing, then ca
   assert.equal(h.effects.release, 0);
   h.setNow(2200); h.track({});
   assert.equal(h.state().phase, 'held');
-  assert.match(h.element('live-status').textContent, /つかんだまま待っています/);
+  assert.match(h.element('live-status').textContent, /持ったまま待っています/);
   h.setNow(2501); h.track({});
   assert.equal(h.state().phase, 'ready');
   assert.equal(h.state().heldPose, null);
@@ -500,7 +564,8 @@ test('a hand returning near the camera edge after a one-second gap can continue 
 
 test('an open hand returning after a long gap keeps its pumpkin but cannot throw from unseen motion', () => {
   const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
-  h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(100, 400)] });
+  h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(100, 400, true)],
+    gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
   h.setNow(1800); h.track({ faces: [faceLandmarks(.75)] });
   for (const time of [2100, 2200, 2300]) {
     h.setNow(time); h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(220, 400, true)],
@@ -622,15 +687,20 @@ test('a single false open classification during a swing does not drop or throw t
   assert.equal(h.effects.release, 1);
 });
 
-test('pulling an open hand back during release confirmation cancels instead of throwing', () => {
+test('pulling an open hand back during release confirmation rearms while keeping the pumpkin', () => {
   const h = cameraHarness(); h.run("source = 'camera'; resetRound();");
   for (const [time, x, open] of [[1000, 150, false], [1150, 300, false], [1300, 450, true], [1400, 350, true]]) {
     h.setNow(time); h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(x, 400, open)],
       gestures: [[{ categoryName: open ? 'Open_Palm' : 'Closed_Fist', score: .95 }]] });
   }
-  assert.equal(h.state().phase, 'ready');
+  assert.equal(h.state().phase, 'held');
   assert.equal(h.effects.release, 0);
   assert.equal(h.state().flight, null);
+  for (const [time, x] of [[1550, 470], [1650, 550]]) {
+    h.setNow(time); h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(x, 400, true)],
+      gestures: [[{ categoryName: 'Open_Palm', score: .95 }]] });
+  }
+  assert.equal(h.state().phase, 'flying', 'the reversed palm can retry without ever closing');
 });
 
 test('an invalid hand is ignored and cannot prevent a valid fist from grabbing', () => {
@@ -762,7 +832,7 @@ test('live tuning changes the required swing and release confirmation and retain
     h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(150, 400)] });
     h.setNow(1200); h.track({ faces: [faceLandmarks(.75)], hands: [handLandmarks(185, 400, true)],
       gestures: [[{ categoryName: 'Open_Palm', score: .8 }]] });
-    assert.equal(h.state().phase, relaxed ? 'flying' : 'ready');
+    assert.equal(h.state().phase, relaxed ? 'flying' : 'held');
     if (!relaxed) {
       assert.equal(h.run('lastThrowReason'), 'slow');
       h.setNow(1300); h.track({});

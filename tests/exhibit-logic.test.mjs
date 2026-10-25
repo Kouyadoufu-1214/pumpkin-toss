@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveRoles, chooseControlHand, handGrip, TossGesture, DwellAction, flightPose, HELD_HAND_GRACE_MS } from '../public/exhibit-logic.mjs';
+import { resolveRoles, chooseControlHand, handGrip, handOpen, TossGesture, DwellAction, flightPose, HELD_HAND_GRACE_MS } from '../public/exhibit-logic.mjs';
 
 test('two-player mode never makes a lone person their own receiver', () => {
   const left = { x: 200 }, right = { x: 1050 };
@@ -469,6 +469,66 @@ function projectHand(worldPoints, { roll = 0, scale = 1000 } = {}) {
   return worldPoints.map(({ x, y }) => ({ x: 400 + scale * (x * Math.cos(roll) - y * Math.sin(roll)),
     y: 350 + scale * (x * Math.sin(roll) + y * Math.cos(roll)) }));
 }
+
+test('open-palm fallback requires at least three extended fingers instead of merely not being a fist', () => {
+  for (const folded of [0, 1, 2, 3, 4]) {
+    const world = anatomicalHand({ folded }), projected = projectHand(world);
+    assert.equal(handOpen(projected), folded <= 1);
+    assert.equal(handOpen(projected, { categoryName: 'None', score: .95 }, world), folded <= 1);
+  }
+  const ambiguous = anatomicalHand({ folded: 2 });
+  assert.equal(handGrip(projectHand(ambiguous)), false);
+  assert.equal(handOpen(projectHand(ambiguous)), false, 'not gripping is insufficient positive evidence of a palm');
+});
+
+test('open-palm recognition trusts confident classifications and supports calibrated confidence safely', () => {
+  const fist = anatomicalHand(), projected = projectHand(fist), palm = anatomicalHand({ folded: 0 });
+  const classifier = { categoryName: 'Open_Palm', score: .65 };
+  assert.equal(handOpen(projected, classifier, fist), false);
+  assert.equal(handOpen(projected, classifier, fist, { confidence: .65 }), true);
+  assert.equal(handOpen(projected, classifier, fist, { confidence: .66 }), false);
+  assert.equal(handOpen(projected, { ...classifier, score: .95 }, fist), true);
+  for (const confidence of [NaN, Infinity, '0', null]) {
+    assert.equal(handOpen(projected, classifier, fist, { confidence }), false);
+  }
+  for (const score of [NaN, Infinity, -1, 1.1, '0.95', null, .49]) {
+    assert.equal(handOpen(projected, { ...classifier, score }, fist, { confidence: 0 }), false);
+  }
+  for (const categoryName of ['Closed_Fist', 'Pointing_Up', 'Thumb_Down', 'Thumb_Up', 'Victory', 'ILoveYou']) {
+    assert.equal(handOpen(projectHand(palm), { categoryName, score: .95 }, palm), false,
+      'a confident different gesture must not become a geometric false positive');
+  }
+});
+
+test('open-palm geometry supports tilted hands, rotation and scale with optional world landmarks', () => {
+  for (const pitch of [0, 55 * Math.PI / 180, 80 * Math.PI / 180]) {
+    const open = anatomicalHand({ folded: 0, pitch }), fist = anatomicalHand({ pitch });
+    for (const roll of [-1.2, 0, 1.8]) {
+      for (const scale of [300, 1000, 2400]) {
+        assert.equal(handOpen(projectHand(open, { roll, scale }), null, open), true);
+        assert.equal(handOpen(projectHand(fist, { roll, scale }), null, fist), false);
+      }
+    }
+  }
+});
+
+test('open-palm geometry rejects pinches, degenerate chains and invalid input without rejecting a usable 2D fallback', () => {
+  const open = anatomicalHand({ folded: 0 }), projected = projectHand(open);
+  const pinched = open.map(point => ({ ...point })); pinched[4] = { ...pinched[8] };
+  assert.equal(handOpen(projectHand(pinched), null, pinched), false);
+  const ambiguous = open.map(point => ({ ...point }));
+  for (const base of [5, 9, 13, 17]) {
+    ambiguous[base + 1] = { ...ambiguous[base] }; ambiguous[base + 2] = { ...ambiguous[base] };
+    ambiguous[base + 3] = { ...ambiguous[base] };
+  }
+  assert.equal(handOpen(projectHand(ambiguous), null, ambiguous), false);
+  const invalidWorld = open.map(point => ({ ...point })); invalidWorld[8].z = NaN;
+  assert.equal(handOpen(projected, null, invalidWorld), true);
+  assert.equal(handOpen(projected, null, []), true);
+  for (const points of [[], Array(21).fill({ x: 0, y: 0 }), projected.map((point, index) => index === 8 ? { x: NaN, y: point.y } : point)]) {
+    assert.equal(handOpen(points, { categoryName: 'Open_Palm', score: .95 }), false);
+  }
+});
 
 test('finger-chain bending recognizes a tilted fist that the old wrist-distance rule missed', () => {
   const world = anatomicalHand({ pitch: 55 * Math.PI / 180 });
